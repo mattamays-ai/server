@@ -32,6 +32,7 @@ from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import remove_file
 from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.smart_fades import SmartFadesProfile
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -213,6 +214,7 @@ class SmartCrossFade(SmartFade):
         logger: logging.Logger,
         fade_out_analysis: AudioAnalysisData,
         fade_in_analysis: AudioAnalysisData,
+        profile: SmartFadesProfile = SmartFadesProfile.AUTO,
     ) -> None:
         """Initialize SmartFades with analysis data.
 
@@ -229,6 +231,7 @@ class SmartCrossFade(SmartFade):
             raise ValueError("AudioAnalysisData must have bpm and beats set for smart crossfade")
         self.fade_out_analysis = fade_out_analysis
         self.fade_in_analysis = fade_in_analysis
+        self.profile = profile
         # Store validated non-optional fields for type narrowing
         self.fade_out_bpm: float = fade_out_analysis.bpm
         self.fade_in_bpm: float = fade_in_analysis.bpm
@@ -281,6 +284,7 @@ class SmartCrossFade(SmartFade):
         is_stretched = (
             0.1 < bpm_diff_percent <= self.time_stretch_bpm_percentage_threshold
             and crossfade_bars > 4
+            and self.profile != SmartFadesProfile.SHORT
         )
         if is_stretched:
             self._apply_gradual_time_stretch(bpm_ratio, bpm_diff_percent, crossfade_duration)
@@ -315,7 +319,8 @@ class SmartCrossFade(SmartFade):
 
         # 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
         avg_bpm = (self.fade_out_bpm + self.fade_in_bpm) / 2
-        crossover_freq = int(np.clip(1500 + (avg_bpm - 90) * 20, 1500, 2500))
+        crossover_bias = {SmartFadesProfile.VOCAL_SAFE: -250, SmartFadesProfile.CLEAN: 350}.get(self.profile, 0)
+        crossover_freq = int(np.clip(1500 + (avg_bpm - 90) * 20 + crossover_bias, 1000, 3000))
 
         # Adjust for BPM mismatch
         if abs(bpm_ratio - 1.0) > 0.3:
@@ -448,10 +453,28 @@ class SmartCrossFade(SmartFade):
         bpm_diff_percent = abs(1.0 - bpm_in / bpm_out) * 100
 
         # Calculate ideal bars based on BPM compatibility
-        ideal_bars = 10 if bpm_diff_percent <= self.time_stretch_bpm_percentage_threshold else 6
+        ideal_bars = {
+            SmartFadesProfile.SHORT: 4,
+            SmartFadesProfile.MEDIUM: 8,
+            SmartFadesProfile.LONG: 16,
+            SmartFadesProfile.VOCAL_SAFE: 4,
+            SmartFadesProfile.TEMPO_MATCH: 12 if bpm_diff_percent <= self.time_stretch_bpm_percentage_threshold else 4,
+            SmartFadesProfile.HARMONIC: 8,
+            SmartFadesProfile.CLEAN: 6,
+        }.get(
+            self.profile,
+            10 if bpm_diff_percent <= self.time_stretch_bpm_percentage_threshold else 6,
+        )
+        if self.profile == SmartFadesProfile.VOCAL_SAFE:
+            ideal_bars = min(ideal_bars, 4)
+        if self.profile == SmartFadesProfile.HARMONIC and (
+            self.fade_out_analysis.key != self.fade_in_analysis.key
+            or self.fade_out_analysis.mode != self.fade_in_analysis.mode
+        ):
+            ideal_bars = min(ideal_bars, 4)
 
         # Reduce bars until it fits in the fadein buffer
-        for bars in [ideal_bars, 8, 6, 4, 2, 1]:
+        for bars in sorted({ideal_bars, 16, 12, 10, 8, 6, 4, 2, 1}, reverse=True):
             if bars > ideal_bars:
                 continue
 
