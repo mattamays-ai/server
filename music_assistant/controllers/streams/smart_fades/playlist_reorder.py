@@ -1,6 +1,6 @@
 """Playlist intelligence for Smart Fades.
 
-Ranks candidate next tracks by transition quality while enforcing hard
+Ranks candidate next tracks by musical transition quality while enforcing hard
 playlist requirements before optimization.
 """
 
@@ -35,22 +35,28 @@ class PlaylistTrack:
 
     track_id: str
     analysis: AudioAnalysisData
+    artist_id: str | None = None
 
 
 class SmartPlaylistReorder:
-    """Optimize playlist order for musical flow and user requirements."""
+    """Heuristic optimizer for playlist flow.
+
+    This is intentionally deterministic. Hard requirements are filtered first;
+    the remaining choices are scored using transition quality plus optional
+    user preferences. A one-step lookahead reduces greedy dead-ends.
+    """
 
     def __init__(self, tracks: Iterable[PlaylistTrack]) -> None:
         self.tracks = tuple(tracks)
+        self.by_id = {track.track_id: track for track in self.tracks}
 
     @staticmethod
     def _compatibility(a: AudioAnalysisData, b: AudioAnalysisData) -> float:
-        """Return 0..1 transition compatibility."""
+        """Return a 0..1 estimate of musical transition compatibility."""
         if not a.bpm or not b.bpm:
-            return 0.0
-
-        bpm_delta = abs(a.bpm - b.bpm)
-        bpm_score = exp(-bpm_delta / 12.0)
+            bpm_score = 0.0
+        else:
+            bpm_score = exp(-abs(a.bpm - b.bpm) / 12.0)
 
         key_score = 0.5
         if a.key and b.key:
@@ -66,83 +72,166 @@ class SmartPlaylistReorder:
         if a.danceability is not None and b.danceability is not None:
             dance_score = 1.0 - min(abs(a.danceability - b.danceability), 1.0)
 
-        return (
-            0.40 * bpm_score
-            + 0.30 * key_score
-            + 0.20 * energy_score
-            + 0.10 * dance_score
+        return 0.40 * bpm_score + 0.30 * key_score + 0.20 * energy_score + 0.10 * dance_score
+
+    def _artist_ok(self, candidate: PlaylistTrack, ordered: list[PlaylistTrack], distance: int) -> bool:
+        if not distance or not candidate.artist_id:
+            return True
+        return all(
+            previous.artist_id != candidate.artist_id
+            for previous in ordered[max(0, len(ordered) - distance):]
         )
 
-    def _allowed(self, track: PlaylistTrack, used: set[str], position: int, req: PlaylistRequirements) -> bool:
-        if track.track_id in req.excluded_ids or track.track_id in used:
+    def _allowed(
+        self,
+        candidate: PlaylistTrack,
+        ordered: list[PlaylistTrack],
+        position: int,
+        req: PlaylistRequirements,
+    ) -> bool:
+        if candidate.track_id in req.excluded_ids:
             return False
         fixed = req.fixed_positions.get(position)
-        if fixed is not None and fixed != track.track_id:
+        if fixed is not None and fixed != candidate.track_id:
             return False
-        if req.allowed_modes and track.analysis.mode not in req.allowed_modes:
+        if req.allowed_modes and candidate.analysis.mode not in req.allowed_modes:
             return False
-        if req.max_bpm_jump is not None and used:
-            previous = self._last_track(used)
-            if previous and previous.analysis.bpm and track.analysis.bpm:
-                if abs(previous.analysis.bpm - track.analysis.bpm) > req.max_bpm_jump:
+        if not self._artist_ok(candidate, ordered, req.keep_artist_separation):
+            return False
+
+        if ordered and req.max_bpm_jump is not None:
+            previous = ordered[-1]
+            if previous.analysis.bpm and candidate.analysis.bpm:
+                if abs(previous.analysis.bpm - candidate.analysis.bpm) > req.max_bpm_jump:
                     return False
         return True
 
-    def _last_track(self, used: set[str]) -> PlaylistTrack | None:
-        for track in reversed(self.tracks):
-            if track.track_id in used:
-                return track
-        return None
+    def _score(
+        self,
+        previous: PlaylistTrack | None,
+        candidate: PlaylistTrack,
+        following: PlaylistTrack | None,
+        req: PlaylistRequirements,
+    ) -> float:
+        weights = {
+            "transition": 1.0,
+            "bpm": 0.10,
+            "key": 0.10,
+            "energy": 0.05,
+            "danceability": 0.05,
+            **req.custom_weights,
+        }
+
+        transition = (
+            self._compatibility(previous.analysis, candidate.analysis)
+            if previous
+            else 0.5
+        )
+        lookahead = (
+            self._compatibility(candidate.analysis, following.analysis)
+            if following
+            else 0.0
+        )
+
+        score = weights["transition"] * transition + 0.25 * lookahead
+
+        if req.target_bpm and candidate.analysis.bpm:
+            score += weights["bpm"] * exp(
+                -abs(candidate.analysis.bpm - req.target_bpm) / 15.0
+            )
+        if req.target_key and candidate.analysis.key:
+            score += weights["key"] * (
+                1.0 if candidate.analysis.key == req.target_key else 0.0
+            )
+        if req.prefer_instrumental:
+            score += 0.05 * (candidate.analysis.instrumentalness or 0.0)
+
+        return score
 
     def reorder(
         self,
         requirements: PlaylistRequirements | None = None,
         start_track_id: str | None = None,
     ) -> list[str]:
-        """Greedily build a valid flow, honoring hard requirements first."""
+        """Build a valid flow; never silently violate a hard requirement."""
         req = requirements or PlaylistRequirements()
-        by_id = {track.track_id: track for track in self.tracks}
-        remaining = [track for track in self.tracks if track.track_id not in req.excluded_ids]
-        if start_track_id and start_track_id in by_id:
-            current = by_id[start_track_id]
-            ordered = [current.track_id]
-            used = {current.track_id}
-        else:
-            ordered = []
-            used = set()
-            current = None
+        excluded = set(req.excluded_ids)
 
-        while len(ordered) < len(remaining):
+        if not req.required_ids or all(track_id in self.by_id for track_id in req.required_ids):
+            pass
+        else:
+            missing = [track_id for track_id in req.required_ids if track_id not in self.by_id]
+            raise ValueError(f"Required track(s) not found: {', '.join(missing)}")
+
+        if any(track_id in excluded for track_id in req.required_ids):
+            raise ValueError("A required track is also excluded")
+
+        for position, track_id in req.fixed_positions.items():
+            if track_id not in self.by_id:
+                raise ValueError(f"Fixed-position track not found: {track_id}")
+            if track_id in excluded:
+                raise ValueError(f"Fixed-position track is excluded: {track_id}")
+
+        candidates = [t for t in self.tracks if t.track_id not in excluded]
+        ordered: list[PlaylistTrack] = []
+        remaining = {t.track_id: t for t in candidates}
+
+        if start_track_id is not None:
+            start = self.by_id.get(start_track_id)
+            if start is None or start.track_id in excluded:
+                raise ValueError("Invalid start track")
+            if req.fixed_positions.get(0) not in (None, start.track_id):
+                raise ValueError("Start track conflicts with fixed position 0")
+            ordered.append(start)
+            remaining.pop(start.track_id, None)
+
+        while remaining:
             position = len(ordered)
-            candidates = [
-                t for t in remaining
-                if self._allowed(t, used, position, req)
+            fixed_id = req.fixed_positions.get(position)
+
+            if fixed_id is not None:
+                candidate = remaining.get(fixed_id)
+                if candidate is None:
+                    raise ValueError(f"Fixed-position track unavailable at position {position}")
+                if not self._allowed(candidate, ordered, position, req):
+                    raise ValueError(f"Fixed-position track violates requirements at position {position}")
+                ordered.append(candidate)
+                remaining.pop(candidate.track_id)
+                continue
+
+            pool = [
+                track for track in remaining.values()
+                if self._allowed(track, ordered, position, req)
             ]
-            if not candidates:
-                # Never silently violate a hard constraint.
+            if not pool:
                 raise ValueError(f"No valid next track at playlist position {position}")
 
-            def score(candidate: PlaylistTrack) -> float:
-                transition = 0.0 if current is None else self._compatibility(current.analysis, candidate.analysis)
-                target = 0.0
-                if req.target_bpm and candidate.analysis.bpm:
-                    target = exp(-abs(candidate.analysis.bpm - req.target_bpm) / 15.0)
-                if req.target_key and candidate.analysis.key:
-                    target = max(target, 1.0 if candidate.analysis.key == req.target_key else 0.0)
-                instrumental = candidate.analysis.instrumentalness or 0.0
-                separation = 0.0
-                if req.keep_artist_separation:
-                    artist = getattr(candidate, "artist", None)
-                    separation = 0.0 if artist else 1.0
-                return (
-                    transition
-                    + 0.10 * target
-                    + (0.05 * instrumental if req.prefer_instrumental else 0.0)
-                    + separation
+            def candidate_score(track: PlaylistTrack) -> float:
+                alternatives = [
+                    other for other in remaining.values()
+                    if other.track_id != track.track_id
+                    and self._allowed(other, ordered + [track], position + 1, req)
+                ]
+                following = max(
+                    alternatives,
+                    key=lambda item: self._compatibility(track.analysis, item.analysis),
+                    default=None,
+                )
+                return self._score(
+                    ordered[-1] if ordered else None,
+                    track,
+                    following,
+                    req,
                 )
 
-            current = max(candidates, key=score)
-            ordered.append(current.track_id)
-            used.add(current.track_id)
+            candidate = max(pool, key=candidate_score)
+            ordered.append(candidate)
+            remaining.pop(candidate.track_id)
 
-        return ordered
+        missing_required = set(req.required_ids) - {track.track_id for track in ordered}
+        if missing_required:
+            raise ValueError(
+                "Required track(s) could not be placed: " + ", ".join(sorted(missing_required))
+            )
+
+        return [track.track_id for track in ordered]
