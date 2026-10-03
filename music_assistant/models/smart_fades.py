@@ -14,6 +14,7 @@ class SmartFadesMode(StrEnum):
     VOCAL_SAFE = "vocal_safe"
     TEMPO_MATCH = "tempo_match"
     CLEAN_BLEND = "clean_blend"
+    SMART_REORDER = "smart_reorder"
 
 
 class SmartFadesProfile(StrEnum):
