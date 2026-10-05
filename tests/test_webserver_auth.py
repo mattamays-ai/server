@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import pathlib
+import time
 from collections.abc import AsyncGenerator
 from datetime import timedelta
 from sqlite3 import IntegrityError
@@ -100,6 +101,15 @@ async def test_has_users_initially_empty(auth_manager: AuthenticationManager) ->
     """
     has_users = auth_manager.has_users
     assert has_users is False
+
+
+async def test_server_time_command_returns_utc_timestamp(mass_minimal: MusicAssistant) -> None:
+    """Return a public server timestamp for frontend clock synchronization."""
+    before = time.time()
+    result = mass_minimal.get_server_time()
+    after = time.time()
+
+    assert before <= result <= after
 
 
 async def test_role_scopes_are_available_to_frontend(auth_manager: AuthenticationManager) -> None:
