@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any
+
+import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,14 +21,15 @@ class SignalControl:
 class DJWeights:
     """Relative weights of the scoring signals for a mode."""
 
-    bpm: float = 0.30
-    key: float = 0.25
-    energy: float = 0.15
+    bpm: float = 0.29
+    key: float = 0.24
+    energy: float = 0.14
     danceability: float = 0.10
     loudness: float = 0.05
     genre: float = 0.05
-    artist_spacing: float = 0.05
-    momentum: float = 0.05
+    artist_spacing: float = 0.04
+    momentum: float = 0.04
+    clap: float = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +55,7 @@ class DJControls:
     genre: SignalControl = SignalControl()
     artist_spacing: SignalControl = SignalControl()
     momentum: SignalControl = SignalControl()
+    clap: SignalControl = SignalControl()
     bpm_min: float | None = None
     bpm_max: float | None = None
     max_bpm_jump: float | None = None
@@ -77,14 +82,15 @@ MODES = {
         0.05,
         0.75,
         DJWeights(
-            bpm=0.28,
+            bpm=0.26,
             key=0.18,
             energy=0.16,
             danceability=0.18,
             loudness=0.06,
-            genre=0.06,
+            genre=0.05,
             artist_spacing=0.04,
             momentum=0.04,
+            clap=0.03,
         ),
     ),
     "chill": DJMode(
@@ -95,12 +101,13 @@ MODES = {
         DJWeights(
             bpm=0.22,
             key=0.18,
-            energy=0.22,
+            energy=0.23,
             danceability=0.10,
-            loudness=0.08,
-            genre=0.10,
+            loudness=0.06,
+            genre=0.08,
             artist_spacing=0.05,
             momentum=0.05,
+            clap=0.03,
         ),
     ),
     "workout": DJMode(
@@ -109,14 +116,15 @@ MODES = {
         0.12,
         0.35,
         DJWeights(
-            bpm=0.32,
+            bpm=0.31,
             key=0.18,
-            energy=0.20,
+            energy=0.19,
             danceability=0.16,
-            loudness=0.05,
+            loudness=0.04,
             genre=0.03,
             artist_spacing=0.03,
             momentum=0.03,
+            clap=0.03,
         ),
     ),
     "custom": DJMode("custom", 0.08, 0.0, 0.50, DJWeights()),
@@ -129,6 +137,36 @@ def _norm_delta(a: Any, b: Any, scale: float) -> float:
     return max(0.0, 1.0 - abs(float(a) - float(b)) / max(scale, 0.001))
 
 
+def _coerce_embedding(value: Any) -> list[float] | None:
+    """Normalise an embedding that may arrive as a list, tuple or JSON string."""
+    if isinstance(value, (list, tuple)):
+        return list(value) if value else None
+    if isinstance(value, str) and value:
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+        if isinstance(parsed, list) and parsed:
+            return parsed
+    return None
+
+
+def clap_similarity(a: Any, b: Any) -> float:
+    """Cosine similarity of two CLAP embeddings, normalised to 0.0-1.0."""
+    emb_a = _coerce_embedding(a)
+    emb_b = _coerce_embedding(b)
+    if emb_a is None or emb_b is None or len(emb_a) != len(emb_b):
+        return 0.5
+    vec_a = np.asarray(emb_a, dtype=np.float32)
+    vec_b = np.asarray(emb_b, dtype=np.float32)
+    norm_a = float(np.linalg.norm(vec_a))
+    norm_b = float(np.linalg.norm(vec_b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.5
+    cosine = float(np.dot(vec_a, vec_b) / (norm_a * norm_b))
+    return (cosine + 1.0) / 2.0
+
+
 def camelot_affinity(a: str | None, b: str | None) -> float:
     """Harmonic compatibility of two Camelot notations (0.0-1.0)."""
     if not a or not b:
@@ -138,7 +176,7 @@ def camelot_affinity(a: str | None, b: str | None) -> float:
     try:
         na, nb = int(str(a)[:-1]), int(str(b)[:-1])
         ma, mb = str(a)[-1].upper(), str(b)[-1].upper()
-    except ValueError, TypeError:
+    except (ValueError, TypeError):
         return 0.0
     if ma == mb and ((na - nb) % 12 in (1, 11)):
         return 0.85
@@ -311,6 +349,7 @@ def _signal_values(
         "momentum": 1.0
         if float(candidate.get("energy") or 0.5) >= float(current.get("energy") or 0.5)
         else 0.65,
+        "clap": clap_similarity(current.get("clap_embedding"), candidate.get("clap_embedding")),
     }
     reasons: list[str] = []
     total = total_weight = 0.0
@@ -318,12 +357,18 @@ def _signal_values(
         control = getattr(controls, name)
         if control.state != "soft":
             continue
+        if name == "clap" and value == 0.5 and not (
+            current.get("clap_embedding") and candidate.get("clap_embedding")
+        ):
+            continue
         effective = max(0.0, control.weight) * getattr(w, name)
         if name == "momentum":
             effective *= 0.5 + controls.transition_aggressiveness
         total += value * effective
         total_weight += effective
-        if value >= 0.85:
+        if name == "clap":
+            reasons.append("sonic similarity strong" if value >= 0.60 else "sonic similarity weak")
+        elif value >= 0.85:
             reasons.append(f"{name.replace('_', ' ')} strong")
     if controls.instrumental == "prefer":
         if candidate.get("instrumental") is True:
@@ -567,6 +612,11 @@ def beam_optimize(  # noqa: PLR0915 - placement pipeline reads best as one pass
                 "bpm_change": bpm_change,
                 "energy_delta": energy_delta,
                 "key_affinity": key_affinity,
+                "clap_similarity": (
+                    clap_similarity(previous.get("clap_embedding"), analysis.get("clap_embedding"))
+                    if isinstance(previous, dict) and isinstance(analysis, dict)
+                    else None
+                ),
                 "transition_bars": controls.transition_bars,
             }
         )
