@@ -119,7 +119,7 @@ jobs:
         # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
         run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
       - name: Lint/test with pre-commit
-        run: SKIP=no-commit-to-branch pre-commit run --all-files
+        run: SKIP=no-commit-to-branch pre-commit run --all-files --show-diff-on-failure
 
   test:
     needs: changes
