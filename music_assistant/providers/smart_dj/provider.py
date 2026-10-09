@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import tempfile
 import time
 from contextlib import suppress
@@ -324,15 +323,25 @@ class SmartDJProvider(PluginProvider):
             )
         self._setup_ui()
 
+    async def unload(self, is_removed: bool = False) -> None:
+        """Close the HTTP client, drop the UI, and unregister commands."""
+        self._teardown_ui()
+        for handle in self._handles:
+            handle()
+        self._handles.clear()
+        if self._session:
+            await self._session.close()
+            self._session = None
+        await super().unload(is_removed)
+
     def _setup_ui(self) -> None:
         """Serve the UI script and inject its tag into the served index.html."""
-        ui_js_path = os.path.join(os.path.dirname(__file__), "ui.js")
-        if not os.path.exists(ui_js_path):
+        ui_js_path = Path(__file__).with_name("ui.js")
+        if not ui_js_path.exists():
             return
         # Read the script once; serve it from memory on every request.
         try:
-            with open(ui_js_path, encoding="utf-8") as ui_file:
-                js_content = ui_file.read()
+            js_content = ui_js_path.read_text(encoding="utf-8")
         except OSError:
             return
 
@@ -350,12 +359,11 @@ class SmartDJProvider(PluginProvider):
 
         # Inject the script tag by serving a patched copy of index.html.
         orig = getattr(self.mass.webserver, "_index_path", None)
-        if not orig or not os.path.exists(orig):
+        if not orig or not Path(orig).exists():
             return
         self._orig_index_path = orig
         try:
-            with open(orig, encoding="utf-8") as index_file:
-                html = index_file.read()
+            html = Path(orig).read_text(encoding="utf-8")
         except OSError:
             return
         if UI_ROUTE in html:
@@ -387,17 +395,6 @@ class SmartDJProvider(PluginProvider):
         if callable(self._unregister_ui_route):
             self._unregister_ui_route()
             self._unregister_ui_route = None
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Close the HTTP client, drop the UI, and unregister commands."""
-        self._teardown_ui()
-        for handle in self._handles:
-            handle()
-        self._handles.clear()
-        if self._session:
-            await self._session.close()
-            self._session = None
-        await super().unload(is_removed)
 
     async def _load_cache(self) -> None:
         """Load the persistent analysis cache."""
