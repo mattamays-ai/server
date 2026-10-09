@@ -13,7 +13,7 @@ ARG FE_REF=main
 FROM node:22-alpine AS fe
 ARG FE_REF
 RUN apk add --no-cache git
-RUN git clone --depth 1 --branch ${FE_REF} \
+RUN git clone --depth 1 --branch "${FE_REF}" \
       https://github.com/mattamays-ai/mattamays-ai-music-assistant-frontend /fe
 WORKDIR /fe
 RUN corepack enable

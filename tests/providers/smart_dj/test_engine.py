@@ -169,7 +169,17 @@ def _soft_controls(**overrides: SignalControl) -> DJControls:
         )
     }
     signals.update(overrides)
-    return DJControls(**signals)
+    return DJControls(
+        bpm=signals["bpm"],
+        key=signals["key"],
+        energy=signals["energy"],
+        danceability=signals["danceability"],
+        loudness=signals["loudness"],
+        genre=signals["genre"],
+        artist_spacing=signals["artist_spacing"],
+        momentum=signals["momentum"],
+        clap=signals["clap"],
+    )
 
 
 def test_clap_signal_contributes_when_enabled() -> None:
