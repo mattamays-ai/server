@@ -514,7 +514,9 @@ class SmartDJProvider(PluginProvider):
                         **(metadata or {}),
                     }
             except Exception as err:
-                self.logger.debug("MA audio analysis unavailable for %s/%s: %s", provider, item_id, err)
+                self.logger.debug(
+                    "MA audio analysis unavailable for %s/%s: %s", provider, item_id, err
+                )
 
         if analysis_provider == "music_assistant":
             return None
