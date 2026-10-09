@@ -5,10 +5,14 @@ on:
   push:
     branches: ["dev"]
     paths:
-      - "music_assistant/providers/smart_dj/**"
+      # The image installs the fork's complete Python package and dependency set.
+      - "music_assistant/**"
+      - "requirements_all.txt"
+      - "pyproject.toml"
+      - "MANIFEST.in"
+      - "setup.cfg"
+      - "README.md"
       - "docker/smartdj.Dockerfile"
-      - "music_assistant/mass.py"
-      - "music_assistant/controllers/webserver/**"
       - "smartdj-addon/config.yaml"
       - ".github/workflows/smartdj-image.yml"
 
