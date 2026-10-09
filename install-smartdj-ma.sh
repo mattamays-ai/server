@@ -64,7 +64,7 @@ api POST "/store/reload" >/dev/null || die "Could not refresh the Home Assistant
 sleep 3
 
 # Verify the app is actually visible before trying to install it.
-store=$(api GET "/store/apps") || die "Could not list Home Assistant apps."
+store=$(api GET "/store/addons") || die "Could not list Home Assistant apps."
 if ! printf '%s' "$store" | grep -Fq "$SLUG"; then
   echo "ERROR: '$SLUG' is not visible in the app store after adding $REPOSITORY." >&2
   echo "Check that the repository's smartdj-addon/config.yaml is accepted by this Home Assistant version." >&2
@@ -76,7 +76,7 @@ if api GET "/addons/$SLUG/info" >/dev/null 2>&1; then
   echo "==> Smart DJ app is already installed; leaving its configuration intact."
 else
   echo "==> Installing $SLUG (first image download may take several minutes)"
-  resp=$(api POST "/store/apps/$SLUG/install") || die "App installation failed: $resp"
+  resp=$(api POST "/store/addons/$SLUG/install") || die "App installation failed: $resp"
   is_ok "$resp" || die "Supervisor did not confirm installation: $resp"
 fi
 
