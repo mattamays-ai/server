@@ -6,8 +6,7 @@ url: https://github.com/mattamays-ai/server
 arch:
   - amd64
   - aarch64
-build: true
-dockerfile: docker/smartdj.Dockerfile
+image: ghcr.io/mattamays-ai/server
 homeassistant_api: true
 hassio_api: true
 hassio_role: manager
