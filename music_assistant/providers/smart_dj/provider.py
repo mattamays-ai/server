@@ -264,10 +264,18 @@ class SmartDJProvider(PluginProvider):
                 self.logger.debug("Smart DJ analysis failed for %s: %s", item["item_id"], result)
             analyzed.append({**item, "analysis": analysis})
 
+        preset = MODES.get(mode, MODES["ai_dj"])
+        selected_mode = DJMode(
+            preset.name,
+            max(0.01, min(1.0, float(bpm_tolerance))),
+            preset.energy_direction,
+            preset.variety,
+            preset.weights,
+        )
         optimized = beam_optimize(
             analyzed,
             None,
-            mode,
+            selected_mode,
             controls=control,
             beam_width=max(4, min(32, control.lookahead * 3)),
         )
@@ -726,7 +734,8 @@ class SmartDJProvider(PluginProvider):
             "bpm": result.get("bpm"),
             "key": result.get("key") or result.get("musical_key"),
             "mode": result.get("mode"),
-            "camelot": result.get("camelot"),
+            "camelot": result.get("camelot")
+            or _camelot_from_key(result.get("key") or result.get("musical_key"), result.get("mode")),
             "energy": result.get("energy"),
             "danceability": result.get("danceability"),
             "valence": result.get("valence"),
