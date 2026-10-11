@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.enums import CrossfadeMode
 
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
-from music_assistant.controllers.streams.smart_fades.models import BlendPrefs
 from music_assistant.controllers.streams.smart_fades.fades import (
     SmartCrossFade,
     SmartFade,
@@ -19,6 +18,7 @@ from music_assistant.controllers.streams.smart_fades.fades import (
     StandardCrossFade,
 )
 from music_assistant.controllers.streams.smart_fades.helpers import detect_effective_audio_end
+from music_assistant.controllers.streams.smart_fades.models import BlendPrefs
 from music_assistant.controllers.streams.smart_fades.vocal import (
     PROTECTIVE_VOCAL_CONFIG,
     VocalMask,

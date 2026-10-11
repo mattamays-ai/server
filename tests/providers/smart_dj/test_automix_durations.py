@@ -1,5 +1,7 @@
 """Tests for Smart DJ AutoMix custom mix length derivation."""
 
+from typing import Any
+
 from music_assistant.providers.smart_dj.engine import DJControls
 from music_assistant.providers.smart_dj.provider import AUTOMIX_MAX_CROSSFADE, _automix_durations
 
@@ -24,7 +26,7 @@ def test_override_wins_over_global() -> None:
 
 def test_track_without_bpm_gets_no_pin() -> None:
     """Tracks without usable bpm keep the engine's default length (no pin)."""
-    tracks = [
+    tracks: list[dict[str, Any]] = [
         {"queue_item_id": "q1", "analysis": None},
         {"queue_item_id": "q2", "analysis": {"bpm": "nonsense", "beats_per_bar": 4}},
         {"queue_item_id": "q3", "analysis": {"bpm": 0, "beats_per_bar": 4}},

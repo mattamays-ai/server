@@ -207,7 +207,9 @@ def test_style_preference_overrides_key_clash() -> None:
     out = _analysis(120.0, key="A", mode="minor")
     inc = _analysis(120.0, key="B", mode="major")
 
-    context = build_transition_context(out, inc, 45.0, LOGGER, blend_prefs=_prefs(TransitionTier.FULL_BLEND, None))
+    context = build_transition_context(
+        out, inc, 45.0, LOGGER, blend_prefs=_prefs(TransitionTier.FULL_BLEND, None)
+    )
 
     assert context.tier is TransitionTier.FULL_BLEND
 
@@ -217,7 +219,9 @@ def test_stretch_gate_outranks_style_preference() -> None:
     out = _analysis(120.0)
     inc = _analysis(132.0)
 
-    context = build_transition_context(out, inc, 45.0, LOGGER, blend_prefs=_prefs(TransitionTier.FULL_BLEND, None))
+    context = build_transition_context(
+        out, inc, 45.0, LOGGER, blend_prefs=_prefs(TransitionTier.FULL_BLEND, None)
+    )
 
     assert context.tier is TransitionTier.QUICK_FADE
 
@@ -232,7 +236,11 @@ def test_stretch_gate_outranks_style_preference() -> None:
 def test_quick_cut_style_forces_the_short_fade() -> None:
     """A quick_cut style forces quick fade even on a fully blendable pair."""
     context = build_transition_context(
-        _analysis(120.0), _analysis(120.0), 45.0, LOGGER, blend_prefs=_prefs(TransitionTier.QUICK_FADE, None)
+        _analysis(120.0),
+        _analysis(120.0),
+        45.0,
+        LOGGER,
+        blend_prefs=_prefs(TransitionTier.QUICK_FADE, None),
     )
 
     assert context.tier is TransitionTier.QUICK_FADE

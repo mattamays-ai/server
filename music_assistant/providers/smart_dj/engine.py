@@ -294,13 +294,13 @@ def _hard_fail(  # noqa: PLR0915 - every hard rule reads clearest inline
         elif abs(float(a) - float(b)) > 0.35:
             violations.append("hard energy compatibility")
 
-    for field, label, scale in (
+    for field_name, label, scale in (
         ("danceability", "danceability", 0.45),
         ("loudness", "loudness", 8.0),
     ):
-        control = getattr(controls, field)
+        control = getattr(controls, field_name)
         if control.state == "hard" and current:
-            a, b = current.get(field), candidate.get(field)
+            a, b = current.get(field_name), candidate.get(field_name)
             if not isinstance(a, (int, float)) or not isinstance(b, (int, float)):
                 violations.append(f"hard {label} compatibility unavailable")
             elif abs(float(a) - float(b)) > scale:

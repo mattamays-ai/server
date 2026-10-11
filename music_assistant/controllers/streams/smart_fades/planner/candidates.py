@@ -344,9 +344,7 @@ class TrimClosingAnchorGenerator(CandidateGenerator):
         if anchor - ctx.default_anchor < self._min_gap:
             return
         # ctx.tier is decided at the early anchor; the grid can be blendable at the audible end
-        _, tier = choose_tier(
-            ctx.outgoing, ctx.incoming, anchor, preferred_tier=ctx.preferred_tier
-        )
+        _, tier = choose_tier(ctx.outgoing, ctx.incoming, anchor, preferred_tier=ctx.preferred_tier)
         ladder = bars_ladder(ctx, tier)
         for bars in ladder:
             yield CandidateSpec(

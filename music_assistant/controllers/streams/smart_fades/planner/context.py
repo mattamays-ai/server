@@ -608,7 +608,8 @@ def choose_tier(
     preferred_tier: TransitionTier | None = None,
     stretch_threshold: float = TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD,
 ) -> tuple[bool, TransitionTier]:
-    """Pick the transition tier; anything that casts doubt on a long blend picks a shorter one.
+    """
+    Pick the transition tier; anything that casts doubt on a long blend picks a shorter one.
 
     A ``preferred_tier`` (from a Smart DJ blend style) overrides the auto choice
     only on a shared, blendable bar grid: cross-meter and unblendable tails

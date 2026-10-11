@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from aiohttp import web
 from music_assistant_models.auth import Scope
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
     ConfigEntryType,
     ExternalID,
@@ -26,10 +27,9 @@ from music_assistant_models.enums import (
 from music_assistant.controllers.player_queues.helpers import build_queue_item
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import BufferMode, BufferSize
-from music_assistant.helpers.audio import decoded_pcm_format
 from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.audio import decoded_pcm_format
 from music_assistant.models.plugin import PluginProvider
-from music_assistant_models.config_entries import ConfigEntry
 
 from .engine import (
     MODES,
@@ -68,10 +68,9 @@ PREROLL_ANALYSIS_TIMEOUT = 600
 PREROLL_POLL_SECONDS = 5
 
 
-def _automix_durations(
-    tracks: list[dict[str, Any]], control: DJControls
-) -> dict[str, float]:
-    """Derive per-track crossfade lengths (seconds) from the plan's transition bars.
+def _automix_durations(tracks: list[dict[str, Any]], control: DJControls) -> dict[str, float]:
+    """
+    Derive per-track crossfade lengths (seconds) from the plan's transition bars.
 
     The transition INTO a track lasts as long as that track's bars (per-track
     override first, then the global setting) at the track's own tempo. Tracks
@@ -86,9 +85,10 @@ def _automix_durations(
             continue
         if bpm <= 0:
             continue
-        bars = control.transition_bars_overrides.get(
-            str(track.get("queue_item_id"))
-        ) or control.transition_bars
+        bars = (
+            control.transition_bars_overrides.get(str(track.get("queue_item_id")))
+            or control.transition_bars
+        )
         try:
             beats_per_bar = int(analysis.get("beats_per_bar") or 4)
         except (TypeError, ValueError):
@@ -106,7 +106,8 @@ def _automix_durations(
 def _automix_blend_prefs(
     tracks: list[dict[str, Any]], control: DJControls
 ) -> dict[str, tuple[str, str]]:
-    """Pin (transition_style, beat_strictness) for every AutoMix-pinned track.
+    """
+    Pin (transition_style, beat_strictness) for every AutoMix-pinned track.
 
     Same keys as the duration pins (the blend INTO each track reads its own
     pref). Style "auto" + strictness "normal" means engine defaults, which the
@@ -170,7 +171,7 @@ def _snapshot_start_index(
     return next(
         (
             index_by_id[str(queue_item_id)]
-            for queue_item_id in raw_queue_item_ids[max(0, current_index):]
+            for queue_item_id in raw_queue_item_ids[max(0, current_index) :]
             if str(queue_item_id) in index_by_id
         ),
         None,
@@ -181,6 +182,7 @@ class SmartDJError(RuntimeError):
     """Named, UI-facing Smart DJ error; ``code`` is a stable identifier."""
 
     def __init__(self, code: str, detail: str = "") -> None:
+        """Store the stable ``code`` and build the UI-facing message."""
         super().__init__(f"{code}: {detail}" if detail else code)
         self.code = code
         self.detail = detail
@@ -221,7 +223,8 @@ def _finite_in(
     *,
     positive: bool = False,
 ) -> float | None:
-    """Return float(value) when finite and in bounds, else None.
+    """
+    Return float(value) when finite and in bounds, else None.
 
     Vendor payloads are untrusted: NaN/Inf/out-of-range/non-numeric values
     must be dropped (to None), never passed into the planner.
@@ -276,8 +279,10 @@ def _float_control(
         value = float(value_raw)
     except (TypeError, ValueError):
         raise SmartDJError("invalid_control", f"{name}={value_raw!r}") from None
-    if not math.isfinite(value) or (lo is not None and value < lo) or (
-        hi is not None and value > hi
+    if (
+        not math.isfinite(value)
+        or (lo is not None and value < lo)
+        or (hi is not None and value > hi)
     ):
         raise SmartDJError("invalid_control", f"{name}={value}")
     return value
@@ -307,7 +312,8 @@ class SmartDJProvider(PluginProvider):
     """Native Smart DJ controller and Musicae enrichment client."""
 
     def _read_full_queue(self, queue_id: str, page: int = 500) -> list[Any]:
-        """Read every queue item via paged reads.
+        """
+        Read every queue item via paged reads.
 
         A single limit-capped read silently truncates long queues, and the
         wholesale write-back of an apply would then DELETE the unread tail
@@ -316,9 +322,7 @@ class SmartDJProvider(PluginProvider):
         out: list[Any] = []
         offset = 0
         while True:
-            batch = list(
-                self.mass.player_queues.items(queue_id, limit=page, offset=offset)
-            )
+            batch = list(self.mass.player_queues.items(queue_id, limit=page, offset=offset))
             out.extend(batch)
             if len(batch) < page:
                 return out
@@ -365,9 +369,7 @@ class SmartDJProvider(PluginProvider):
         for item, result in zip(items, analyses, strict=True):
             analysis = None if isinstance(result, Exception) else result
             if isinstance(result, Exception):
-                self.logger.debug(
-                    "Smart DJ analysis failed for %s: %s", item["item_id"], result
-                )
+                self.logger.debug("Smart DJ analysis failed for %s: %s", item["item_id"], result)
             analyzed.append({**item, "analysis": analysis})
 
         current = analyzed[0]["analysis"] if analyzed and analyzed[0].get("analysis") else None
@@ -384,9 +386,7 @@ class SmartDJProvider(PluginProvider):
             "degraded": analysis_failed > 0,
         }
 
-    async def preroll_queue_analysis(
-        self, queue_id: str, limit: int = 10
-    ) -> dict[str, Any]:
+    async def preroll_queue_analysis(self, queue_id: str, limit: int = 10) -> dict[str, Any]:
         """
         Silently analyze upcoming queue tracks that have no analysis yet.
 
@@ -406,9 +406,7 @@ class SmartDJProvider(PluginProvider):
         current_index = max(0, int(queue.current_index or 0))
         # skip the playing track and its preloaded next: playback analyzes those
         upcoming = [
-            item
-            for item in items[current_index + 1 :]
-            if item.media_type == MediaType.TRACK
+            item for item in items[current_index + 1 :] if item.media_type == MediaType.TRACK
         ]
         prerolled: list[str] = []
         failed: dict[str, str] = {}
@@ -417,7 +415,7 @@ class SmartDJProvider(PluginProvider):
                 break
             try:
                 done = await self._preroll_track_analysis(item)
-            except Exception as err:  # noqa: BLE001 - one track must not kill the sweep
+            except Exception as err:
                 self.logger.debug("Smart DJ preroll failed for %s: %s", item.name, err)
                 failed[str(item.queue_item_id)] = str(err)
                 continue
@@ -514,7 +512,9 @@ class SmartDJProvider(PluginProvider):
             raise RuntimeError("Musicae radio failed - " + " | ".join(errors))
         raw_tracks = data.get("tracks") if isinstance(data, dict) else None
         if not isinstance(raw_tracks, list):
-            raise RuntimeError(f"Unexpected Musicae radio response shape: {str(data)[:300]}")
+            raise RuntimeError(  # noqa: TRY004 - vendor shape, not a type error
+                f"Unexpected Musicae radio response shape: {str(data)[:300]}"
+            )
 
         tracks: list[Any] = []
         seen: set[str] = set()
@@ -525,7 +525,7 @@ class SmartDJProvider(PluginProvider):
             seen.add(track_id)
             try:
                 track = await self.mass.music.tracks.get(track_id, spotify_instance)
-            except Exception as err:  # noqa: BLE001 - skip unresolvable ids
+            except Exception as err:
                 self.logger.debug("Musicae radio track %s not resolvable: %s", track_id, err)
                 continue
             tracks.append(track)
@@ -536,7 +536,7 @@ class SmartDJProvider(PluginProvider):
 
         queue_items = [build_queue_item(queue_id, track) for track in tracks]
         insert_at = len(self._read_full_queue(queue_id))
-        self.mass.player_queues.load(
+        await self.mass.player_queues.load(
             queue_id,
             queue_items,
             insert_at_index=insert_at,
@@ -604,14 +604,7 @@ class SmartDJProvider(PluginProvider):
                 if not (cached and now - cached[0] < CACHE_TTL):
                     key = (candidate, track.item_id)
             if key is None:
-                isrc = next(
-                    (
-                        value
-                        for ext_id, value in (track.metadata.external_ids or [])
-                        if ext_id == ExternalID.ISRC
-                    ),
-                    None,
-                ) if track.metadata else None
+                isrc = track.get_external_id(ExternalID.ISRC)
                 if isrc:
                     cache_key = f"isrc:{isrc}"
                     cached = self._cache.get(cache_key)
@@ -637,7 +630,10 @@ class SmartDJProvider(PluginProvider):
                     break
                 errors.append(str(err)[:200])
                 continue
-            entries = data if isinstance(data, list) else (data.get("data") or [])
+            raw_entries: Any = data
+            entries = (
+                raw_entries if isinstance(raw_entries, list) else (raw_entries.get("data") or [])
+            )
             if not isinstance(entries, list):
                 entries = [entries]
             for (cache_key, _), entry in zip(chunk, entries, strict=False):
@@ -732,7 +728,9 @@ class SmartDJProvider(PluginProvider):
         transition_bars = _int_control(raw, "transition_bars", 8, allowed={4, 8, 16, 32})
         overrides_raw = raw.get("transition_bars_overrides") or {}
         if not isinstance(overrides_raw, dict):
-            raise RuntimeError("transition_bars_overrides must be an object of track id -> bars")
+            raise RuntimeError(  # noqa: TRY004 - control contract, not a type error
+                "transition_bars_overrides must be an object of track id -> bars"
+            )
         overrides: dict[str, int] = {}
         for track_id, bars in overrides_raw.items():
             try:
@@ -756,6 +754,7 @@ class SmartDJProvider(PluginProvider):
         beat_strictness = str(raw.get("beat_strictness", "normal"))
         if beat_strictness not in {"strict", "normal", "aggressive"}:
             raise RuntimeError("beat_strictness must be one of strict, normal, aggressive")
+        aggr = _float_control(raw, "transition_aggressiveness", 0.5, 0.0, 1.0)
         return DJControls(
             bpm=signal("bpm"),
             key=signal("key", "soft" if prefer_keys else "disabled"),
@@ -782,16 +781,14 @@ class SmartDJProvider(PluginProvider):
             # the FE slider spans 1-96 (beam width = lookahead x 3, capped
             # at 96), so the backend accepts the full range it advertises
             lookahead=_int_control(raw, "lookahead", 8, lo=1, hi=96),
-            transition_aggressiveness=_float_control(
-                raw, "transition_aggressiveness", 0.5, 0.0, 1.0
-            ),
+            transition_aggressiveness=0.5 if aggr is None else aggr,
             required_ids=frozenset(str(x) for x in raw.get("required_ids", [])),
             excluded_ids=frozenset(str(x) for x in raw.get("excluded_ids", [])),
             fixed_ids=frozenset(str(x) for x in raw.get("fixed_ids", [])),
             end_track_id=str(raw["end_track_id"]) if raw.get("end_track_id") else None,
         )
 
-    async def mix_playlist(
+    async def mix_playlist(  # noqa: PLR0915 - linear pipeline by design
         self,
         queue_id: str,
         playlist_provider: str,
@@ -810,9 +807,7 @@ class SmartDJProvider(PluginProvider):
 
         playlist_tracks: list[Any] = [
             item
-            async for item in self.mass.music.playlists.tracks(
-                playlist_item_id, playlist_provider
-            )
+            async for item in self.mass.music.playlists.tracks(playlist_item_id, playlist_provider)
         ]
         playlist_total = len(playlist_tracks)
         truncated = playlist_total > MIX_PLAYLIST_MAX_TRACKS
@@ -833,7 +828,9 @@ class SmartDJProvider(PluginProvider):
         for track in playlist_tracks:
             if getattr(track, "metadata", None) is None and getattr(track, "item_id", None):
                 with suppress(Exception):
-                    track = await self.mass.music.tracks.get(track.item_id, track.provider)
+                    track = await self.mass.music.tracks.get(  # noqa: PLW2901
+                        track.item_id, track.provider
+                    )
             if getattr(track, "item_id", None) and (
                 getattr(track, "provider", None) or getattr(track, "provider_instance", None)
             ):
@@ -841,18 +838,17 @@ class SmartDJProvider(PluginProvider):
         if len(resolved) < 2:
             raise RuntimeError("Playlist tracks could not be resolved for mixing")
 
-        items: list[dict[str, Any]] = []
+        analysis_rows: list[dict[str, Any]] = []
         media_by_id: dict[str, Any] = {}
         for idx, track in enumerate(resolved):
             metadata = getattr(track, "metadata", None)
             genres = list(getattr(metadata, "genres", None) or [])
             mix_id = f"mix-{idx}"
-            items.append(
+            analysis_rows.append(
                 {
                     "queue_item_id": mix_id,
                     "name": track.name,
-                    "artist": getattr(track, "artist_str", None)
-                    or getattr(track, "artist", None),
+                    "artist": getattr(track, "artist_str", None) or getattr(track, "artist", None),
                     "item_id": track.item_id,
                     "provider": getattr(track, "provider", None)
                     or getattr(track, "provider_instance", None),
@@ -872,11 +868,11 @@ class SmartDJProvider(PluginProvider):
                     analysis_provider,
                 )
             )
-            for item in items
+            for item in analysis_rows
         ]
         analyses = await asyncio.gather(*tasks, return_exceptions=True)
         analyzed: list[dict[str, Any]] = []
-        for item, result in zip(items, analyses, strict=True):
+        for item, result in zip(analysis_rows, analyses, strict=True):
             analysis = None if isinstance(result, Exception) else result
             if isinstance(result, Exception):
                 self.logger.debug("Smart DJ analysis failed for %s: %s", item["item_id"], result)
@@ -914,9 +910,7 @@ class SmartDJProvider(PluginProvider):
             # Anchor the plan at the track that is playing right now (it keeps
             # playing, untouched) and reorder only the not-yet-played tail --
             # instead of replacing the queue and restarting from the top.
-            anchor = next(
-                entry for entry in analyzed if str(entry["item_id"]) == current_media_id
-            )
+            anchor = next(entry for entry in analyzed if str(entry["item_id"]) == current_media_id)
             played_ids = {
                 str(getattr(item.media_item, "item_id", "") or "")
                 for item in items[: current_index + 1]
@@ -948,14 +942,12 @@ class SmartDJProvider(PluginProvider):
                     qitem = build_queue_item(queue_id, media_by_id[entry["queue_item_id"]])
                 id_map[str(entry["queue_item_id"])] = str(qitem.queue_item_id)
                 ranked_items.append(qitem)
-            assert len({item.queue_item_id for item in ranked_items}) == len(
-                ranked_items
-            ), "Queue integrity check failed: duplicate queue item in plan"
+            assert len({item.queue_item_id for item in ranked_items}) == len(ranked_items), (
+                "Queue integrity check failed: duplicate queue item in plan"
+            )
             ranked_ids = {item.queue_item_id for item in ranked_items}
             remainder = [
-                item
-                for item in items[current_index + 1 :]
-                if item.queue_item_id not in ranked_ids
+                item for item in items[current_index + 1 :] if item.queue_item_id not in ranked_ids
             ]
             self.mass.player_queues.update_items(
                 queue_id, items[: current_index + 1] + ranked_items + remainder
@@ -982,9 +974,7 @@ class SmartDJProvider(PluginProvider):
                 self.mass.create_task(self.preroll_queue_analysis(queue_id, 10))
                 automix_info = {
                     "enabled": True,
-                    "mode": "smart"
-                    if self.mass.streams.smart_fades_available
-                    else "standard",
+                    "mode": "smart" if self.mass.streams.smart_fades_available else "standard",
                 }
             return {
                 "queue_id": queue_id,
@@ -1018,9 +1008,7 @@ class SmartDJProvider(PluginProvider):
             len(ordered_media),
             queue_id,
         )
-        await self.mass.player_queues.play_media(
-            queue_id, ordered_media, option=QueueOption.PLAY
-        )
+        await self.mass.player_queues.play_media(queue_id, ordered_media, option=QueueOption.PLAY)
         if control.automix_enabled:
             # Real AutoMix execution on the freshly mixed queue (smart fades
             # when analysis is available, standard crossfade otherwise).
@@ -1057,9 +1045,7 @@ class SmartDJProvider(PluginProvider):
             self.mass.create_task(self.preroll_queue_analysis(queue_id, 10))
             automix_info = {
                 "enabled": True,
-                "mode": "smart"
-                if self.mass.streams.smart_fades_available
-                else "standard",
+                "mode": "smart" if self.mass.streams.smart_fades_available else "standard",
             }
         return {
             "queue_id": queue_id,
@@ -1073,7 +1059,7 @@ class SmartDJProvider(PluginProvider):
             "automix": automix_info,
         }
 
-    async def rank_queue(
+    async def rank_queue(  # noqa: PLR0915 - linear pipeline by design
         self,
         queue_id: str,
         bpm_tolerance: float = 0.08,
@@ -1105,11 +1091,9 @@ class SmartDJProvider(PluginProvider):
                     _automix_blend_prefs(tracks[1:], control)
                 )
                 self.mass.create_task(self.preroll_queue_analysis(queue_id, 10))
-                automix_info = {
+                automix_pin = {
                     "enabled": True,
-                    "mode": "smart"
-                    if self.mass.streams.smart_fades_available
-                    else "standard",
+                    "mode": "smart" if self.mass.streams.smart_fades_available else "standard",
                 }
             return {
                 "queue_id": queue_id,
@@ -1119,9 +1103,9 @@ class SmartDJProvider(PluginProvider):
                 # durations/prefs, which is reported separately below.
                 "applied": False,
                 "queue_changed": False,
-                "automix_applied": automix_info is not None,
+                "automix_applied": automix_pin is not None,
                 "reason": "smart_reorder_disabled",
-                "automix": automix_info,
+                "automix": automix_pin,
                 "settings": {"controls": raw, "smart_reorder_enabled": False},
             }
 
@@ -1167,8 +1151,7 @@ class SmartDJProvider(PluginProvider):
             ranked_ids = [
                 track["queue_item_id"]
                 for track in optimized
-                if track["queue_item_id"] not in prefix_ids
-                and track["queue_item_id"] in by_id
+                if track["queue_item_id"] not in prefix_ids and track["queue_item_id"] in by_id
             ]
             dropped = len(optimized) - len(ranked_ids)
             if dropped:
@@ -1206,9 +1189,7 @@ class SmartDJProvider(PluginProvider):
                 self.mass.create_task(self.preroll_queue_analysis(queue_id, 10))
                 automix_info = {
                     "enabled": True,
-                    "mode": "smart"
-                    if self.mass.streams.smart_fades_available
-                    else "standard",
+                    "mode": "smart" if self.mass.streams.smart_fades_available else "standard",
                 }
         return {
             "queue_id": queue_id,
@@ -1452,7 +1433,8 @@ class SmartDJProvider(PluginProvider):
             self.logger.warning("Could not load Smart DJ cache: %s", err)
 
     async def _save_cache(self) -> None:
-        """Persist analysis cache atomically.
+        """
+        Persist analysis cache atomically.
 
         A lock serializes saves and each save uses a UNIQUE temp file: the
         old fixed ``analysis_cache.tmp`` name meant two overlapping saves
@@ -1476,18 +1458,16 @@ class SmartDJProvider(PluginProvider):
 
     def _atomic_write_cache(self, payload: dict[str, Any]) -> None:
         """Write payload to a unique temp file, fsync, then rename over."""
-        fd, tmp_name = tempfile.mkstemp(
-            dir=self._cache_file.parent, suffix=".tmp"
-        )
+        fd, tmp_name = tempfile.mkstemp(dir=self._cache_file.parent, suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as file_handle:
                 json.dump(payload, file_handle)
                 file_handle.flush()
                 os.fsync(file_handle.fileno())
-            os.replace(tmp_name, self._cache_file)
+            Path(tmp_name).replace(self._cache_file)
         except BaseException:
             with suppress(OSError):
-                os.unlink(tmp_name)
+                Path(tmp_name).unlink()
             raise
 
     def _key(self) -> str | None:
@@ -1498,7 +1478,8 @@ class SmartDJProvider(PluginProvider):
         return str(value) if value else (app_var(CONF_RAPIDAPI_KEY) or None)
 
     async def _request(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
-        """Call Musicae without exposing credentials to clients.
+        """
+        Call Musicae without exposing credentials to clients.
 
         Bounded concurrency, explicit timeout, and bounded retry for
         429/5xx/network errors only. 401/403 never retry. Retries honor a
@@ -1518,30 +1499,30 @@ class SmartDJProvider(PluginProvider):
         for attempt in range(MUSICAE_MAX_ATTEMPTS):
             retry_after: float | None = None
             try:
-                async with self._musicae_sem:
-                    async with self._session.get(
-                        url, params=params, headers=headers
-                    ) as response:
-                        if response.status in (401, 403):
-                            body = await response.text()
-                            raise SmartDJError(
-                                "musicae_auth",
-                                f"Musicae request failed ({response.status}): {body[:300]}",
-                            )
-                        if response.status == 429 or response.status >= 500:
-                            body = await response.text()
-                            last_err = f"({response.status}): {body[:300]}"
-                            ra = response.headers.get("Retry-After", "")
-                            if ra.replace(".", "", 1).isdigit():
-                                retry_after = float(ra)
-                        elif response.status >= 400:
-                            body = await response.text()
-                            raise RuntimeError(
-                                f"Musicae request failed ({response.status}): {body[:300]}"
-                            )
-                        else:
-                            data = await response.json()
-                            return data if isinstance(data, dict) else {}
+                async with (
+                    self._musicae_sem,
+                    self._session.get(url, params=params, headers=headers) as response,
+                ):
+                    if response.status in (401, 403):
+                        body = await response.text()
+                        raise SmartDJError(
+                            "musicae_auth",
+                            f"Musicae request failed ({response.status}): {body[:300]}",
+                        )
+                    if response.status == 429 or response.status >= 500:
+                        body = await response.text()
+                        last_err = f"({response.status}): {body[:300]}"
+                        ra = response.headers.get("Retry-After", "")
+                        if ra.replace(".", "", 1).isdigit():
+                            retry_after = float(ra)
+                    elif response.status >= 400:
+                        body = await response.text()
+                        raise RuntimeError(
+                            f"Musicae request failed ({response.status}): {body[:300]}"
+                        )
+                    else:
+                        data = await response.json()
+                        return data if isinstance(data, dict) else {}
             except (RuntimeError, SmartDJError):
                 raise
             except (aiohttp.ClientError, TimeoutError) as err:

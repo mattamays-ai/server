@@ -1,5 +1,8 @@
 """Focused Smart DJ provider tests."""
 
+import inspect
+from typing import Any
+
 from music_assistant.providers.smart_dj.engine import (
     MODES,
     DJControls,
@@ -7,6 +10,8 @@ from music_assistant.providers.smart_dj.engine import (
     score_candidate,
 )
 from music_assistant.providers.smart_dj.provider import (
+    SmartDJError,
+    SmartDJProvider,
     _camelot_from_key,
     _snapshot_start_index,
 )
@@ -53,6 +58,7 @@ def test_required_excluded_and_fixed_controls_are_serializable() -> None:
     assert "excluded" in controls.excluded_ids
     assert "fixed" in controls.fixed_ids
 
+
 def test_snapshot_starts_at_current_queue_item() -> None:
     """Previously played queue items must not be treated as current/upcoming."""
     snapshot = [
@@ -82,18 +88,15 @@ def test_snapshot_start_returns_none_when_no_playable_items_remain() -> None:
 # External-audit fixes (0.0.20): C-1, H-2, M-2, M-5, M-7
 # ------------------------------------------------------------------
 
-def _bare_provider():
-    """Provider instance without the framework (sync-only helpers)."""
-    from music_assistant.providers.smart_dj.provider import SmartDJProvider
 
+def _bare_provider() -> Any:
+    """Return a bare provider instance (no framework wiring)."""
     return SmartDJProvider.__new__(SmartDJProvider)
 
 
 def test_parse_controls_malformed_values_raise_named_errors() -> None:
     """Malformed control values raise SmartDJError, not raw int/float errors."""
-    import pytest
-
-    from music_assistant.providers.smart_dj.provider import SmartDJError
+    import pytest  # noqa: PLC0415 - pytest is not a sandbox dependency
 
     prov = _bare_provider()
     bad_inputs = (
@@ -111,8 +114,6 @@ def test_parse_controls_malformed_values_raise_named_errors() -> None:
 
 def test_lookahead_accepts_the_full_advertised_range() -> None:
     """The backend accepts lookahead 1-96 to match the FE slider (M-7/L-2)."""
-    from music_assistant.providers.smart_dj.provider import SmartDJError
-
     prov = _bare_provider()
     assert prov._parse_controls({}, 0.08, True, True, "ai_dj").lookahead == 8
     assert prov._parse_controls({"lookahead": 96}, 0.08, True, True, "ai_dj").lookahead == 96
@@ -149,21 +150,17 @@ class _PagedFakePQ:
     """Fake player_queues.items honoring limit/offset paging."""
 
     def __init__(self, count: int) -> None:
-        self.items_list = [
-            type("QI", (), {"queue_item_id": f"q{i}"})() for i in range(count)
-        ]
+        self.items_list = [type("QI", (), {"queue_item_id": f"q{i}"})() for i in range(count)]
 
-    def items(self, _queue_id, limit, offset):  # noqa: D401 - test fake
+    def items(self, _queue_id: str, limit: int, offset: int) -> list[Any]:
         return self._items_list_style(offset, limit)
 
-    def _items_list_style(self, offset, limit):
+    def _items_list_style(self, offset: int, limit: int) -> list[Any]:
         return self.items_list[offset : offset + limit]
 
 
 def test_read_full_queue_paginates_past_1000() -> None:
     """A queue beyond 1,000 items is read in FULL (audit C-1)."""
-    from music_assistant.providers.smart_dj.provider import SmartDJProvider
-
     fake_pq = _PagedFakePQ(1250)
     prov = SmartDJProvider.__new__(SmartDJProvider)
     prov.mass = type("M", (), {"player_queues": fake_pq})()
@@ -173,11 +170,7 @@ def test_read_full_queue_paginates_past_1000() -> None:
 
 
 def test_analyze_registration_requires_library_write() -> None:
-    """analyze can spend Musicae quota and write the cache: not guest-safe (H-2)."""
-    import inspect
-
-    from music_assistant.providers.smart_dj.provider import SmartDJProvider
-
+    """Analyze can spend Musicae quota and write the cache: not guest-safe (H-2)."""
     source = inspect.getsource(SmartDJProvider.loaded_in_mass)
     assert '("smart_dj/analyze", self.analyze, Scope.LIBRARY_WRITE)' in source
     # only genuinely read-only commands stay at scope None
