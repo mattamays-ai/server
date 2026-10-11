@@ -6,7 +6,10 @@ from music_assistant.providers.smart_dj.engine import (
     SignalControl,
     score_candidate,
 )
-from music_assistant.providers.smart_dj.provider import _camelot_from_key
+from music_assistant.providers.smart_dj.provider import (
+    _camelot_from_key,
+    _snapshot_start_index,
+)
 
 
 def test_camelot_conversion() -> None:
@@ -49,3 +52,27 @@ def test_required_excluded_and_fixed_controls_are_serializable() -> None:
     assert "required" in controls.required_ids
     assert "excluded" in controls.excluded_ids
     assert "fixed" in controls.fixed_ids
+
+def test_snapshot_starts_at_current_queue_item() -> None:
+    """Previously played queue items must not be treated as current/upcoming."""
+    snapshot = [
+        {"queue_item_id": "q1"},
+        {"queue_item_id": "q2"},
+        {"queue_item_id": "q3"},
+    ]
+    assert _snapshot_start_index(snapshot, ["q1", "q2", "q3"], 1) == 1
+
+
+def test_snapshot_start_skips_unresolvable_current_item() -> None:
+    """If current media is unresolvable, start at the next playable queue item."""
+    snapshot = [
+        {"queue_item_id": "q1"},
+        {"queue_item_id": "q3"},
+    ]
+    assert _snapshot_start_index(snapshot, ["q1", "q2", "q3"], 1) == 1
+
+
+def test_snapshot_start_returns_none_when_no_playable_items_remain() -> None:
+    """An exhausted queue has no analysis start item."""
+    snapshot = [{"queue_item_id": "q1"}]
+    assert _snapshot_start_index(snapshot, ["q1"], 1) is None

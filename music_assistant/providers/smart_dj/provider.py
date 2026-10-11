@@ -85,32 +85,76 @@ def _camelot_from_key(key: str | None, mode: str | None) -> str | None:
     return (minor_keys if minor else major_keys).get(normalized)
 
 
+def _snapshot_start_index(
+    snapshot: list[dict[str, Any]],
+    raw_queue_item_ids: list[str],
+    current_index: int,
+) -> int | None:
+    """Find the first analyzable queue item at or after the current index."""
+    index_by_id = {
+        str(item["queue_item_id"]): index
+        for index, item in enumerate(snapshot)
+        if item.get("queue_item_id") is not None
+    }
+    return next(
+        (
+            index_by_id[str(queue_item_id)]
+            for queue_item_id in raw_queue_item_ids[max(0, current_index):]
+            if str(queue_item_id) in index_by_id
+        ),
+        None,
+    )
+
+
 class SmartDJProvider(PluginProvider):
     """Native Smart DJ controller and Musicae enrichment client."""
 
     async def analyze(
         self, queue_id: str, limit: int = 40, analysis_provider: str = "auto"
     ) -> dict[str, Any]:
-        """Analyze the active queue and return DJ-ready metadata."""
-        items = (await self._queue_snapshot(queue_id))[: max(1, min(limit, 100))]
-        analyzed = []
+        """Analyze the active queue starting at its current playable item."""
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
+            raise RuntimeError(f"Queue not found: {queue_id}")
+
+        # _queue_snapshot omits queue items without resolvable media provider IDs.
+        # Resolve the current start against the unfiltered queue first, then find
+        # that queue-item ID in the compact snapshot so skipped entries do not
+        # shift the current-index calculation.
+        raw_items = self.mass.player_queues.items(queue_id, limit=1000, offset=0)
+        current_index = max(0, int(queue.current_index or 0))
+        snapshot = await self._queue_snapshot(queue_id)
+        start = _snapshot_start_index(
+            snapshot,
+            [str(item.queue_item_id) for item in raw_items],
+            current_index,
+        )
+        if start is None:
+            items: list[dict[str, Any]] = []
+        else:
+            items = snapshot[start : start + max(1, min(limit, 100))]
+
         tasks = [
             asyncio.create_task(
                 self._analysis(
                     item["item_id"],
                     item["provider"],
-                    {k: item[k] for k in ("genre", "genres", "explicit") if k in item},
+                    {key: item[key] for key in ("genre", "genres", "explicit") if key in item},
                     analysis_provider,
                 )
             )
             for item in items
         ]
         analyses = await asyncio.gather(*tasks, return_exceptions=True)
+        analyzed: list[dict[str, Any]] = []
         for item, result in zip(items, analyses, strict=True):
             analysis = None if isinstance(result, Exception) else result
             if isinstance(result, Exception):
-                self.logger.debug("Smart DJ analysis failed for %s: %s", item["item_id"], result)
+                self.logger.debug(
+                    "Smart DJ analysis failed for %s: %s", item["item_id"], result
+                )
             analyzed.append({**item, "analysis": analysis})
+
         current = analyzed[0]["analysis"] if analyzed and analyzed[0].get("analysis") else None
         return {"queue_id": queue_id, "tracks": analyzed, "current": current}
 
