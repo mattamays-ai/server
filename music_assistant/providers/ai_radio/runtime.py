@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
+import datetime as dt
 import logging
 import random
 import time
@@ -1004,13 +1004,13 @@ class AIRadioRuntimeMixin:
         country = str(self.config.get_value(CONF_WEATHER_COUNTRY) or "").strip()
         return city, country
 
-    def _configured_now(self) -> datetime.datetime:
+    def _configured_now(self) -> dt.datetime:
         """Return the current time in the configured timezone, falling back to host local time."""
         tz_name = str(self.config.get_value(CONF_TIMEZONE) or "").strip()
         if tz_name:
             try:
                 return utc().astimezone(ZoneInfo(tz_name))
-            except (ZoneInfoNotFoundError, ValueError):
+            except ZoneInfoNotFoundError, ValueError:
                 # a typo must not take the run down, but it should not pass unnoticed either
                 self.logger.warning(
                     "Ignoring invalid timezone %r, falling back to the host timezone", tz_name

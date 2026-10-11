@@ -894,10 +894,10 @@ class TestParseRetryAfter:
 
     def test_http_date(self) -> None:
         """RFC 9110 HTTP-date format returns seconds until that time."""
-        import datetime  # noqa: PLC0415
+        import datetime as dt  # noqa: PLC0415
 
         # Create a date 60 seconds in the future
-        future = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(seconds=60)
+        future = dt.datetime.now(tz=dt.UTC) + dt.timedelta(seconds=60)
         date_str = future.strftime("%a, %d %b %Y %H:%M:%S GMT")
         result = parse_retry_after(date_str)
         # Allow ±2 seconds tolerance for test execution time

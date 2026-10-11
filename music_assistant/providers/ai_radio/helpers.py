@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import random
 import re
 from typing import Any
@@ -26,7 +26,7 @@ def utc_now_iso() -> str:
     return utc().isoformat()
 
 
-def format_ai_radio_timestamp(moment: datetime.datetime) -> str:
+def format_ai_radio_timestamp(moment: dt.datetime) -> str:
     """Format a moment for the <timestamp> placeholder, spelling out the weekday and month."""
     # spelled out so the LLM never has to derive the weekday from a numeric date
     return moment.strftime("%A %d %B %Y, %H:%M %Z")
@@ -153,7 +153,7 @@ def coerce_float(value: Any, default: float) -> float:
     """Convert arbitrary value to float with a safe fallback."""
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -161,7 +161,7 @@ def coerce_int(value: Any, default: int) -> int:
     """Convert arbitrary value to int with a safe fallback."""
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 

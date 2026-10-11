@@ -6,7 +6,7 @@ of gpodder.net (mygpo) or drop-in replacements like opodsync.
 Gpodder Sync uses guid optionally.
 """
 
-import datetime
+import datetime as dt
 import logging
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -254,9 +254,7 @@ class GPodderClient:
         ]
 
         with suppress(ValueError):
-            actions = sorted(actions, key=lambda x: datetime.datetime.fromisoformat(x.timestamp))[
-                ::-1
-            ]
+            actions = sorted(actions, key=lambda x: dt.datetime.fromisoformat(x.timestamp))[::-1]
 
         return actions, actions_response.timestamp
 

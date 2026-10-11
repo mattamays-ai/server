@@ -27,6 +27,13 @@ from music_assistant_models.media_items.media_item import BrowseFolder, Recommen
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.setup_flow import SetupFlowStep
 from music_assistant_models.translations import TRANSLATION_RESOLVER
+from scripts import build_translations as build_translations_module
+from scripts.build_translations import (
+    _find_duplicate_keys,
+    _flatten_into,
+    _resolve_references,
+    build_translations_source,
+)
 
 from music_assistant.controllers import translations as translations_module
 from music_assistant.controllers.config.helpers import _with_translation_owner
@@ -38,13 +45,6 @@ from music_assistant.controllers.translations import (
     _candidate_keys,
     _format,
     _locale_candidates,
-)
-from scripts import build_translations as build_translations_module
-from scripts.build_translations import (
-    _find_duplicate_keys,
-    _flatten_into,
-    _resolve_references,
-    build_translations_source,
 )
 
 if TYPE_CHECKING:

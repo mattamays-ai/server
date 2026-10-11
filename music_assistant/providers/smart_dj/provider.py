@@ -84,7 +84,7 @@ def _automix_durations(tracks: list[dict[str, Any]], control: DJControls) -> dic
             continue
         try:
             bpm = float(raw_bpm)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if bpm <= 0:
             continue
@@ -94,7 +94,7 @@ def _automix_durations(tracks: list[dict[str, Any]], control: DJControls) -> dic
         )
         try:
             beats_per_bar = int(analysis.get("beats_per_bar") or 4)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             beats_per_bar = 4
         if beats_per_bar <= 0:
             beats_per_bar = 4
@@ -258,7 +258,7 @@ def _int_control(
     value_raw = raw.get(name, default)
     try:
         value = int(value_raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         raise SmartDJError("invalid_control", f"{name}={value_raw!r}") from None
     if allowed is not None and value not in allowed:
         raise SmartDJError("invalid_control", f"{name}={value}")
@@ -280,7 +280,7 @@ def _float_control(
         return None
     try:
         value = float(value_raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         raise SmartDJError("invalid_control", f"{name}={value_raw!r}") from None
     if (
         not math.isfinite(value)
@@ -294,7 +294,7 @@ def _float_control(
 def _signal_weight(value: Any) -> float:
     try:
         weight = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         raise SmartDJError("invalid_control", f"weight={value!r}") from None
     if not math.isfinite(weight) or weight < 0.0:
         raise SmartDJError("invalid_control", f"weight={value!r}")
@@ -304,7 +304,7 @@ def _signal_weight(value: Any) -> float:
 def _bpm_tolerance(value: Any) -> float:
     try:
         tol = float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         raise SmartDJError("invalid_control", f"bpm_tolerance={value!r}") from None
     if not math.isfinite(tol):
         raise SmartDJError("invalid_control", f"bpm_tolerance={value!r}")
@@ -738,7 +738,7 @@ class SmartDJProvider(PluginProvider):
         for track_id, bars in overrides_raw.items():
             try:
                 bars_int = int(bars)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 raise RuntimeError(f"Invalid transition bars value for {track_id}: {bars!r}")
             if bars_int not in {0, 4, 8, 16, 32}:
                 raise RuntimeError(
@@ -1526,7 +1526,7 @@ class SmartDJProvider(PluginProvider):
                     else:
                         data = await response.json()
                         return data if isinstance(data, dict) else {}
-            except (RuntimeError, SmartDJError):
+            except RuntimeError, SmartDJError:
                 raise
             except (aiohttp.ClientError, TimeoutError) as err:
                 last_err = f"network: {err}"

@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from scripts import check_package_safety
 from scripts.check_package_safety import (
     check_license_compatibility,

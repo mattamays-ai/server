@@ -116,20 +116,6 @@ from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.fades import SmartFade, StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.smart_fades.models import BlendPrefs
-
-# beat_strictness -> max BPM-difference percent the planner may stretch across
-# (normal matches the engine's own default gate)
-BEAT_STRICTNESS_STRETCH_PCT = {"strict": 6.0, "normal": 8.0, "aggressive": 12.0}
-# user-facing blend style -> planner TransitionTier value ("auto" and any
-# unknown style map to no tier preference). "energy" is the medium,
-# key-clash-tolerant blend (TEMPO_BLEND); "quick_cut" is the short
-# downbeat-snapped fade (QUICK_FADE). These MUST be tier values, not the
-# style names themselves -- TransitionTier() raises on anything else.
-BLEND_STYLE_TO_TIER = {
-    "full_blend": "full_blend",
-    "energy": "tempo_blend",
-    "quick_cut": "quick_fade",
-}
 from music_assistant.helpers import ssl as ssl_util
 from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.audio import (
@@ -178,6 +164,20 @@ from music_assistant.helpers.util import (
     remove_file,
 )
 from music_assistant.models.music_provider import MusicProvider, ProviderStreamLimitError
+
+# beat_strictness -> max BPM-difference percent the planner may stretch across
+# (normal matches the engine's own default gate)
+BEAT_STRICTNESS_STRETCH_PCT = {"strict": 6.0, "normal": 8.0, "aggressive": 12.0}
+# user-facing blend style -> planner TransitionTier value ("auto" and any
+# unknown style map to no tier preference). "energy" is the medium,
+# key-clash-tolerant blend (TEMPO_BLEND); "quick_cut" is the short
+# downbeat-snapped fade (QUICK_FADE). These MUST be tier values, not the
+# style names themselves -- TransitionTier() raises on anything else.
+BLEND_STYLE_TO_TIER = {
+    "full_blend": "full_blend",
+    "energy": "tempo_blend",
+    "quick_cut": "quick_fade",
+}
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import MediaItemType, ProviderMapping
@@ -436,9 +436,7 @@ class _IncomingFadePrefetcher:
             return
         # an AutoMix-pinned length wins over both the smart default and the
         # configured standard duration
-        automix_duration = self._audio.get_automix_crossfade_duration(
-            next_item.queue_item_id
-        )
+        automix_duration = self._audio.get_automix_crossfade_duration(next_item.queue_item_id)
         overlap: float = (
             automix_duration
             if automix_duration is not None
@@ -1832,9 +1830,7 @@ class StreamsAudio:
         empty map, which releases any previously pinned custom lengths.
         """
         self._automix_durations = {
-            str(item_id): float(secs)
-            for item_id, secs in durations.items()
-            if float(secs) > 0
+            str(item_id): float(secs) for item_id, secs in durations.items() if float(secs) > 0
         }
 
     def get_automix_crossfade_duration(self, queue_item_id: str) -> float | None:
@@ -3241,7 +3237,7 @@ class StreamsAudio:
                     try:
                         key, value = line.decode("latin-1", errors="ignore").split(":", 1)
                         headers[key.strip().lower()] = value.strip()
-                    except (UnicodeDecodeError, ValueError):
+                    except UnicodeDecodeError, ValueError:
                         continue
 
             # Get metadata interval
@@ -4798,7 +4794,7 @@ class StreamsAudio:
         except TimeoutError:
             self.logger.debug("Timeout during Shoutcast validation for %s", url)
             return False
-        except (OSError, ConnectionError):
+        except OSError, ConnectionError:
             self.logger.debug("Connection failed during Shoutcast validation for %s", url)
             return False
         except UnicodeDecodeError:

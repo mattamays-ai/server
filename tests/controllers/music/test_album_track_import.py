@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -165,7 +165,7 @@ async def test_missing_album_link_is_backfilled() -> None:
     """An earlier import that stored a track without its album is repaired."""
     sync_details = TrackSyncDetails(
         item_id=1,
-        date_added=datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC),
+        date_added=dt.datetime(2026, 1, 1, tzinfo=dt.UTC),
         provider_mappings=set(),
         has_album=False,
         has_artists=True,

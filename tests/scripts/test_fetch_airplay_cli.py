@@ -7,7 +7,6 @@ import stat
 from pathlib import Path
 
 import pytest
-
 from scripts import fetch_airplay_cli
 
 

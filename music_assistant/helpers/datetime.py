@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import os
 from pathlib import Path
 from zoneinfo import available_timezones
 
-LOCAL_TIMEZONE = datetime.datetime.now(datetime.UTC).astimezone().tzinfo
+LOCAL_TIMEZONE = dt.datetime.now(dt.UTC).astimezone().tzinfo
 
 
-def utc() -> datetime.datetime:
+def utc() -> dt.datetime:
     """Get current UTC datetime."""
-    return datetime.datetime.now(datetime.UTC)
+    return dt.datetime.now(dt.UTC)
 
 
 def utc_timestamp() -> float:
@@ -20,9 +20,9 @@ def utc_timestamp() -> float:
     return utc().timestamp()
 
 
-def now() -> datetime.datetime:
+def now() -> dt.datetime:
     """Get current datetime in local timezone."""
-    return datetime.datetime.now(LOCAL_TIMEZONE)
+    return dt.datetime.now(LOCAL_TIMEZONE)
 
 
 def now_timestamp() -> float:
@@ -32,12 +32,12 @@ def now_timestamp() -> float:
 
 def future_timestamp(**kwargs: float) -> float:
     """Return current timestamp + timedelta."""
-    return (now() + datetime.timedelta(**kwargs)).timestamp()
+    return (now() + dt.timedelta(**kwargs)).timestamp()
 
 
-def from_utc_timestamp(timestamp: float) -> datetime.datetime:
+def from_utc_timestamp(timestamp: float) -> dt.datetime:
     """Return datetime from UTC timestamp."""
-    return datetime.datetime.fromtimestamp(timestamp, datetime.UTC)
+    return dt.datetime.fromtimestamp(timestamp, dt.UTC)
 
 
 def iso_from_utc_timestamp(timestamp: float) -> str:
@@ -45,9 +45,9 @@ def iso_from_utc_timestamp(timestamp: float) -> str:
     return from_utc_timestamp(timestamp).isoformat()
 
 
-def from_iso_string(iso_datetime: str) -> datetime.datetime:
+def from_iso_string(iso_datetime: str) -> dt.datetime:
     """Return datetime from ISO datetime string."""
-    return datetime.datetime.fromisoformat(iso_datetime)
+    return dt.datetime.fromisoformat(iso_datetime)
 
 
 def host_timezone_name() -> str:
@@ -78,12 +78,12 @@ def local_clock_time_to_utc(hour: int, minute: int = 0) -> tuple[int, int]:
 
     This uses the server's current local timezone offset.
     """
-    local_timezone = LOCAL_TIMEZONE or datetime.UTC
-    local_datetime = datetime.datetime.now(local_timezone).replace(
+    local_timezone = LOCAL_TIMEZONE or dt.UTC
+    local_datetime = dt.datetime.now(local_timezone).replace(
         hour=hour,
         minute=minute,
         second=0,
         microsecond=0,
     )
-    utc_datetime = local_datetime.astimezone(datetime.UTC)
+    utc_datetime = local_datetime.astimezone(dt.UTC)
     return utc_datetime.hour, utc_datetime.minute

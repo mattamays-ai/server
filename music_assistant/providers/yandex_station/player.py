@@ -460,7 +460,7 @@ class YandexStationPlayer(Player):
             result = await self.glagol.send(command)
             _LOGGER.debug("[%s] %s result: %s", self.player_id, directive, result)
             _raise_if_failed(result, directive)
-        except (PlayerCommandFailed, asyncio.CancelledError):
+        except PlayerCommandFailed, asyncio.CancelledError:
             # Only clear the session this call started; a newer play_media
             # may already own the external session.
             if self._external_play_generation == generation:

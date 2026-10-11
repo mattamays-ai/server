@@ -13,7 +13,6 @@ from typing import Any, cast
 
 import pytest
 import yaml
-
 from scripts.release_workflow import (
     OCI_REVISION_ANNOTATION,
     OCI_WHEEL_ANNOTATION,

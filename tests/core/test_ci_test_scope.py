@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from scripts.ci_test_scope import cov_source, decide, provider_name
 
 

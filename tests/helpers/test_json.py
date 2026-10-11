@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import enum
 import uuid
 from typing import Any
@@ -98,10 +98,10 @@ class _Colour(enum.StrEnum):
         ([1, True, 1.5], "[1,true,1.5]"),
         ((1, 2), "[1,2]"),
         (b"\x00\x01", '"AAE="'),
-        (datetime.date(2026, 1, 1), '"2026-01-01"'),
+        (dt.date(2026, 1, 1), '"2026-01-01"'),
         (uuid.UUID(int=0), '"00000000-0000-0000-0000-000000000000"'),
         (_Colour.RED, '"red"'),
-        ([datetime.date(2026, 1, 1)], '["2026-01-01"]'),
+        ([dt.date(2026, 1, 1)], '["2026-01-01"]'),
     ],
 )
 def test_serialize_to_json_passes_through_supported_values(value: Any, expected: str) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
+import datetime as dt
 import hashlib
 import time
 from collections.abc import Awaitable, Callable
@@ -636,7 +636,7 @@ class QobuzProvider(MusicProvider):
             artist.metadata.description = biography.get("content")
             artist.metadata.description_language = biography.get("language")
         if favorited_at := artist_obj.get("favorited_at"):
-            artist.date_added = datetime.datetime.fromtimestamp(favorited_at, tz=datetime.UTC)
+            artist.date_added = dt.datetime.fromtimestamp(favorited_at, tz=dt.UTC)
         return artist
 
     async def _parse_album(
@@ -706,7 +706,7 @@ class QobuzProvider(MusicProvider):
             album.metadata.label = album_obj["label"]["name"]
         if released_at := album_obj.get("released_at"):
             with suppress(ValueError):
-                album.year = datetime.datetime.fromtimestamp(released_at, tz=UTC).year
+                album.year = dt.datetime.fromtimestamp(released_at, tz=UTC).year
         if album_obj.get("copyright"):
             album.metadata.copyright = album_obj["copyright"]
         if album_obj.get("description"):
@@ -714,7 +714,7 @@ class QobuzProvider(MusicProvider):
         if album_obj.get("parental_warning"):
             album.metadata.explicit = True
         if favorited_at := album_obj.get("favorited_at"):
-            album.date_added = datetime.datetime.fromtimestamp(favorited_at, tz=datetime.UTC)
+            album.date_added = dt.datetime.fromtimestamp(favorited_at, tz=dt.UTC)
         return album
 
     async def _parse_track(self, track_obj: dict[str, Any]) -> Track:
@@ -804,7 +804,7 @@ class QobuzProvider(MusicProvider):
                 )
             )
         if favorited_at := track_obj.get("favorited_at"):
-            track.date_added = datetime.datetime.fromtimestamp(favorited_at, tz=datetime.UTC)
+            track.date_added = dt.datetime.fromtimestamp(favorited_at, tz=dt.UTC)
         return track
 
     def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
@@ -844,7 +844,7 @@ class QobuzProvider(MusicProvider):
             )
         # subscribed_at for playlists the user subscribed to, created_at for user-owned ones
         if timestamp := playlist_obj.get("subscribed_at") or playlist_obj.get("created_at"):
-            playlist.date_added = datetime.datetime.fromtimestamp(timestamp, tz=datetime.UTC)
+            playlist.date_added = dt.datetime.fromtimestamp(timestamp, tz=dt.UTC)
         return playlist
 
     async def _get_item_by_external_id(

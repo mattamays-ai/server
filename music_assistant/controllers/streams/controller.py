@@ -856,11 +856,9 @@ class StreamsController(CoreController):
                 # can actually deliver (see _select_buffered_crossfade)
                 crossfade_mode = self.get_crossfade_mode(queue)
             if (
-                crossfade_mode != CrossfadeMode.SMART_CROSSFADE
-                and crossfade_mode != CrossfadeMode.DISABLED
+                crossfade_mode not in (CrossfadeMode.SMART_CROSSFADE, CrossfadeMode.DISABLED)
                 and self.smart_fades_available
-                and self.audio.get_automix_crossfade_duration(queue_item.queue_item_id)
-                is not None
+                and self.audio.get_automix_crossfade_duration(queue_item.queue_item_id) is not None
             ):
                 # Smart DJ AutoMix pinned a custom transition for this item:
                 # prefer smart blending over the queue's default mode
@@ -1241,7 +1239,7 @@ class StreamsController(CoreController):
                             break
                         try:
                             await resp.write(chunk)
-                        except (BrokenPipeError, ConnectionResetError, ConnectionError):
+                        except BrokenPipeError, ConnectionResetError, ConnectionError:
                             break
             finally:
                 self._active_output_streams -= 1
@@ -1290,8 +1288,7 @@ class StreamsController(CoreController):
             else CrossfadeMode.DISABLED
         )
         if (
-            crossfade_mode != CrossfadeMode.SMART_CROSSFADE
-            and crossfade_mode != CrossfadeMode.DISABLED
+            crossfade_mode not in (CrossfadeMode.SMART_CROSSFADE, CrossfadeMode.DISABLED)
             and self.smart_fades_available
             and self.audio.get_automix_crossfade_duration(start_queue_item.queue_item_id)
             is not None
@@ -1424,7 +1421,7 @@ class StreamsController(CoreController):
                 async for chunk in audio_bytes:
                     try:
                         await resp.write(chunk)
-                    except (BrokenPipeError, ConnectionResetError, ConnectionError):
+                    except BrokenPipeError, ConnectionResetError, ConnectionError:
                         # race condition
                         client_disconnected = True
                         break
@@ -1454,7 +1451,7 @@ class StreamsController(CoreController):
                     length_b = chr(int(length / 16)).encode()
                     try:
                         await resp.write(length_b + metadata)
-                    except (BrokenPipeError, ConnectionResetError, ConnectionError):
+                    except BrokenPipeError, ConnectionResetError, ConnectionError:
                         # same as the chunk write above: a superseded response is
                         # aborted under us and this is its normal end
                         client_disconnected = True
@@ -1564,7 +1561,7 @@ class StreamsController(CoreController):
             async for chunk in announcement_stream:
                 try:
                     await resp.write(chunk)
-                except (BrokenPipeError, ConnectionResetError):
+                except BrokenPipeError, ConnectionResetError:
                     break
 
         self.logger.debug(

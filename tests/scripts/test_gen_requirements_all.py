@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from scripts.gen_requirements_all import GIT_REPO_REGEX
 
 

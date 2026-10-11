@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
+import datetime as dt
 import json
 import logging
 import random
@@ -897,7 +897,7 @@ def test_resolve_placeholders_keeps_time_and_weather_deferred() -> None:
 def test_resolve_placeholders_timestamp_spells_out_weekday() -> None:
     """The deferred <timestamp> value names the weekday so the LLM never has to derive it."""
     runtime = DummyRuntime()
-    moment = datetime.datetime(2026, 8, 22, 16, 20, tzinfo=datetime.UTC)
+    moment = dt.datetime(2026, 8, 22, 16, 20, tzinfo=dt.UTC)
     runtime._configured_now = lambda: moment  # type: ignore[method-assign]
     tracks = [
         {"index": 0, "songinfo": "A - One", "duration": 200},
