@@ -134,6 +134,21 @@ class SmartDJProvider(PluginProvider):
         transition_bars = int(raw.get("transition_bars", 8))
         if transition_bars not in {4, 8, 16, 32}:
             raise RuntimeError("transition_bars must be one of 4, 8, 16, or 32")
+        overrides_raw = raw.get("transition_bars_overrides") or {}
+        if not isinstance(overrides_raw, dict):
+            raise RuntimeError("transition_bars_overrides must be an object of track id -> bars")
+        overrides: dict[str, int] = {}
+        for track_id, bars in overrides_raw.items():
+            try:
+                bars_int = int(bars)
+            except (TypeError, ValueError):
+                raise RuntimeError(f"Invalid transition bars value for {track_id}: {bars!r}")
+            if bars_int not in {0, 4, 8, 16, 32}:
+                raise RuntimeError(
+                    f"Invalid transition bars value for {track_id}: {bars_int} "
+                    "(must be 0 (hard cut), 4, 8, 16, or 32)"
+                )
+            overrides[str(track_id)] = bars_int
         return DJControls(
             bpm=signal("bpm"),
             key=signal("key", "soft" if prefer_keys else "disabled"),
@@ -154,6 +169,7 @@ class SmartDJProvider(PluginProvider):
             instrumental=str(raw.get("instrumental", "any")),
             explicit=str(raw.get("explicit", "allow")),
             transition_bars=transition_bars,
+            transition_bars_overrides=overrides,
             automix_enabled=bool(raw.get("automix_enabled", False)),
             smart_reorder_enabled=bool(raw.get("smart_reorder_enabled", True)),
             lookahead=max(1, min(32, int(raw.get("lookahead", 4)))),

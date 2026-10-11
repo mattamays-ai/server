@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -64,6 +64,9 @@ class DJControls:
     instrumental: str = "any"  # any | prefer | required
     explicit: str = "allow"  # allow | exclude
     transition_bars: int = 8
+    # Per-track transition length overrides, keyed by queue_item_id (the
+    # transition INTO that track). Values: 4/8/16/32 bars, or 0 = hard cut.
+    transition_bars_overrides: dict[str, int] = field(default_factory=dict)
     automix_enabled: bool = False
     smart_reorder_enabled: bool = True
     lookahead: int = 4
@@ -619,7 +622,9 @@ def beam_optimize(  # noqa: PLR0915 - placement pipeline reads best as one pass
                     if isinstance(previous, dict) and isinstance(analysis, dict)
                     else None
                 ),
-                "transition_bars": controls.transition_bars,
+                "transition_bars": controls.transition_bars_overrides.get(
+                    str(item.get("queue_item_id")), controls.transition_bars
+                ),
             }
         )
         previous = analysis
