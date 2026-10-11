@@ -430,10 +430,10 @@ def test_soft_key_relation_allows_incompatible_step() -> None:
 def test_soft_key_relation_penalises_incompatible_step() -> None:
     """Under soft relation, a harmonic step outscores an incompatible one."""
     current = _track(camelot="8A")
-    harmonic, _ = score_candidate(
+    harmonic, _reasons, _violations = score_candidate(
         current, _track(camelot="8B"), MODES["ai_dj"], DJControls(key_relation="soft")
     )
-    forced, reasons = score_candidate(
+    forced, reasons, _v = score_candidate(
         current, _track(camelot="3A"), MODES["ai_dj"], DJControls(key_relation="soft")
     )
     assert harmonic > forced
@@ -443,10 +443,10 @@ def test_soft_key_relation_penalises_incompatible_step() -> None:
 def test_soft_key_relation_matches_any_on_penalty_free_steps() -> None:
     """Without a key clash, soft and any score identically."""
     current = _track(camelot="8A")
-    soft, _ = score_candidate(
+    soft, _reasons, _violations = score_candidate(
         current, _track(camelot="8B"), MODES["ai_dj"], DJControls(key_relation="soft")
     )
-    any_rel, _ = score_candidate(
+    any_rel, _r2, _v2 = score_candidate(
         current, _track(camelot="8B"), MODES["ai_dj"], DJControls(key_relation="any")
     )
     assert soft == any_rel
