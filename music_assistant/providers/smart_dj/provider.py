@@ -15,7 +15,9 @@ from aiohttp import web
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import QueueOption
 
+from music_assistant.helpers.app_vars import app_var
 from music_assistant.models.plugin import PluginProvider
+from music_assistant_models.config_entries import ConfigEntry, ConfigEntryType
 
 from .engine import (
     MODES,
@@ -436,6 +438,17 @@ class SmartDJProvider(PluginProvider):
             },
         }
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Expose the Musicae RapidAPI key so it can be set in the provider UI."""
+        return (
+            ConfigEntry(
+                key=CONF_RAPIDAPI_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                default_value=app_var(CONF_RAPIDAPI_KEY),
+                required=False,
+            ),
+        )
+
     async def status(self) -> dict[str, Any]:
         """Return provider readiness without revealing credentials."""
         return {
@@ -598,7 +611,10 @@ class SmartDJProvider(PluginProvider):
 
     def _key(self) -> str | None:
         value = self.config.get_value(CONF_RAPIDAPI_KEY)
-        return str(value) if value else None
+        # call-time env fallback (same pattern as Spotify's app_var reads): the
+        # add-on wrapper injects MASS_APP_VAR_RAPIDAPI_KEY, and a config default
+        # only prefills the UI — never rely on the parse path alone.
+        return str(value) if value else (app_var(CONF_RAPIDAPI_KEY) or None)
 
     async def _request(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
         """Call Musicae without exposing credentials to clients."""

@@ -87,6 +87,7 @@ VALID = {
     "theaudiodb_api_key", "fanarttv_api_key", "deezer_decrypt_key",
     "apple_music_token", "tidal_client_id_v2", "tidal_client_secret_v2",
     "lastfm_api_key", "lastfm_api_secret", "acoustid_api_key",
+    "rapidapi_key",
 }
 data_dir = "/data"
 opts_path = os.path.join(data_dir, "options.json")

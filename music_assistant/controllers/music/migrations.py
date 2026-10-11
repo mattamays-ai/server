@@ -169,7 +169,7 @@ async def migrate_database(  # noqa: PLR0915
                 metadata = json_loads(db_row["metadata"])
                 try:
                     datetime.fromisoformat(metadata["release_date"])
-                except KeyError, ValueError:
+                except (KeyError, ValueError):
                     # this is not a valid date, so we set it to None
                     metadata["release_date"] = None
                     await database.update(
@@ -1407,7 +1407,7 @@ async def _move_classical_genre_aliases(
     def _load_aliases(row: Mapping[str, Any]) -> list[str] | None:
         try:
             aliases = json_loads(row["genre_aliases"]) if row["genre_aliases"] else []
-        except TypeError, ValueError:
+        except (TypeError, ValueError):
             return None
         if not isinstance(aliases, list) or not all(isinstance(x, str) for x in aliases):
             return None

@@ -1,5 +1,5 @@
 name: Music Assistant Smart DJ
-version: "0.0.15"
+version: "0.0.16"
 slug: music_assistant_smartdj
 description: Music Assistant built from the mattamays-ai Smart DJ fork. Prebuilt image, fast starts.
 url: https://github.com/mattamays-ai/server
@@ -42,6 +42,7 @@ options:
   theaudiodb_api_key: ""
   fanarttv_api_key: ""
   acoustid_api_key: ""
+  rapidapi_key: ""
 schema:
   log_level: list(debug|info|warning|error)
   safe_mode: bool
@@ -58,3 +59,4 @@ schema:
   theaudiodb_api_key: password?
   fanarttv_api_key: password?
   acoustid_api_key: password?
+  rapidapi_key: password?
