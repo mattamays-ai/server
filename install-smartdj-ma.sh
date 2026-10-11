@@ -71,9 +71,15 @@ if ! printf '%s' "$store" | grep -Fq "$SLUG"; then
   exit 1
 fi
 
-# Install only if not already installed.
+# Install only if not already installed; update an existing install to the
+# latest store version.
 if api GET "/addons/$SLUG/info" >/dev/null 2>&1; then
-  echo "==> Smart DJ app is already installed; leaving its configuration intact."
+  echo "==> Smart DJ app is already installed; updating to the latest store version"
+  if resp=$(api POST "/store/addons/$SLUG/update"); then
+    is_ok "$resp" || echo "NOTE: Supervisor answered $resp"
+  else
+    echo "NOTE: update call failed (possibly already on the latest version); continuing."
+  fi
 else
   echo "==> Installing $SLUG (first image download may take several minutes)"
   resp=$(api POST "/store/addons/$SLUG/install") || die "App installation failed: $resp"

@@ -67,13 +67,15 @@ EXPOSE 18095 18097
 # settings and provider tokens live in other files and are NOT touched.
 # Flip the option off (or on->off->on for a later reset) to re-arm.
 #
-# Provider-credentials hook: any string entries in the add-on option
-# app_var_overrides whose key matches a known Music Assistant app var name
-# (e.g. "spotify_client_id") are placed directly into the process environment
-# as MASS_APP_VAR_<NAME> before the server starts; app_var() resolves env
-# overrides ahead of the bundled app_secrets.json, so these take effect
-# immediately. Unknown/non-string entries are logged and ignored. Values are
-# never printed to the log. No shell evaluation is used for credential values.
+# Provider-credentials hook: the add-on options spotify_client_id,
+# apple_music_token, tidal_client_id_v2, tidal_client_secret_v2, qobuz_app_id,
+# qobuz_app_secret, deezer_decrypt_key, lastfm_api_key, lastfm_api_secret,
+# theaudiodb_api_key, fanarttv_api_key and acoustid_api_key are placed directly
+# into the process environment as MASS_APP_VAR_<NAME> before the server starts;
+# app_var() resolves env overrides ahead of the bundled app_secrets.json, so
+# user-registered credentials take effect immediately. Empty options are
+# skipped and values are never printed to the log. No shell evaluation is used
+# for credential values.
 RUN mv /usr/local/bin/entrypoint.sh /usr/local/bin/entrypoint-orig.sh
 COPY <<'EOF' /usr/local/bin/entrypoint.sh
 #!/bin/sh
@@ -97,24 +99,16 @@ if os.path.exists(opts_path):
         print(f"[smartdj] Could not read add-on options: {err}", file=sys.stderr, flush=True)
         raise
 
-overrides = opts.get("app_var_overrides") or {}
-if not isinstance(overrides, dict):
-    print("[smartdj] app_var_overrides is not a map; ignored", file=sys.stderr, flush=True)
-    overrides = {}
-for name, value in overrides.items():
+for name in sorted(VALID):
+    value = opts.get(name)
     if not value:
         continue
-    if name not in VALID:
-        print(f"[smartdj] app_var_overrides: unknown key '{name}' ignored "
-              "(valid: " + ", ".join(sorted(VALID)) + ")", file=sys.stderr, flush=True)
-        continue
     if not isinstance(value, str):
-        print(f"[smartdj] app_var_overrides: non-string value for '{name}' ignored",
+        print(f"[smartdj] credential option '{name}' is not a string; ignored",
               file=sys.stderr, flush=True)
         continue
-    var = f"MASS_APP_VAR_{name.upper()}"
-    os.environ[var] = value
-    print(f"[smartdj] app var override applied: {name}", file=sys.stderr, flush=True)
+    os.environ[f"MASS_APP_VAR_{name.upper()}"] = value
+    print(f"[smartdj] credential option applied: {name}", file=sys.stderr, flush=True)
 
 marker = os.path.join(data_dir, ".auth_reset_done")
 if not opts.get("reset_admin"):
