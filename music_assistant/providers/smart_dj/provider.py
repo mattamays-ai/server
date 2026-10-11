@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from aiohttp import web
 from music_assistant_models.auth import Scope
+from music_assistant_models.enums import QueueOption
 
 from music_assistant.models.plugin import PluginProvider
 
@@ -111,23 +112,15 @@ class SmartDJProvider(PluginProvider):
         current = analyzed[0]["analysis"] if analyzed and analyzed[0].get("analysis") else None
         return {"queue_id": queue_id, "tracks": analyzed, "current": current}
 
-    async def rank_queue(
+    def _parse_controls(
         self,
-        queue_id: str,
-        bpm_tolerance: float = 0.08,
-        prefer_keys: bool = True,
-        preserve_variety: bool = True,
-        mode: str = "ai_dj",
-        controls: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """Optimize the upcoming queue under an explicit user control contract."""
-        raw = dict(controls or {})
-        apply = bool(raw.pop("apply", False))
-        analysis_provider = str(raw.get("analysis_provider", "auto"))
-        snapshot = await self.analyze(queue_id, analysis_provider=analysis_provider)
-        tracks = snapshot["tracks"]
-        if len(tracks) < 2:
-            return snapshot
+        raw: dict[str, Any],
+        bpm_tolerance: float,
+        prefer_keys: bool,
+        preserve_variety: bool,
+        mode: str,
+    ) -> DJControls:
+        """Build DJControls from raw API controls plus ranking defaults."""
 
         def signal(name: str, fallback: str = "soft") -> SignalControl:
             value = raw.get(name, fallback)
@@ -141,7 +134,7 @@ class SmartDJProvider(PluginProvider):
         transition_bars = int(raw.get("transition_bars", 8))
         if transition_bars not in {4, 8, 16, 32}:
             raise RuntimeError("transition_bars must be one of 4, 8, 16, or 32")
-        control = DJControls(
+        return DJControls(
             bpm=signal("bpm"),
             key=signal("key", "soft" if prefer_keys else "disabled"),
             energy=signal("energy"),
@@ -172,6 +165,137 @@ class SmartDJProvider(PluginProvider):
             fixed_ids=frozenset(str(x) for x in raw.get("fixed_ids", [])),
             end_track_id=str(raw["end_track_id"]) if raw.get("end_track_id") else None,
         )
+
+    async def mix_playlist(
+        self,
+        queue_id: str,
+        playlist_provider: str,
+        playlist_item_id: str,
+        bpm_tolerance: float = 0.08,
+        prefer_keys: bool = True,
+        preserve_variety: bool = True,
+        mode: str = "ai_dj",
+        controls: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Play a playlist on the given queue in Smart DJ (beat/key) order."""
+        raw = dict(controls or {})
+        analysis_provider = str(raw.get("analysis_provider", "auto"))
+        control = self._parse_controls(raw, bpm_tolerance, prefer_keys, preserve_variety, mode)
+
+        playlist_tracks: list[Any] = [
+            item
+            async for item in self.mass.music.playlists.tracks(
+                playlist_item_id, playlist_provider
+            )
+        ][:100]
+        if len(playlist_tracks) < 2:
+            raise RuntimeError("Playlist needs at least 2 tracks to mix")
+
+        # Resolve lightweight item mappings to full tracks so genre metadata
+        # (needed for analysis) is available.
+        resolved: list[Any] = []
+        for track in playlist_tracks:
+            if getattr(track, "metadata", None) is None and getattr(track, "item_id", None):
+                with suppress(Exception):
+                    track = await self.mass.music.tracks.get(track.item_id, track.provider)
+            if getattr(track, "item_id", None) and (
+                getattr(track, "provider", None) or getattr(track, "provider_instance", None)
+            ):
+                resolved.append(track)
+        if len(resolved) < 2:
+            raise RuntimeError("Playlist tracks could not be resolved for mixing")
+
+        items: list[dict[str, Any]] = []
+        media_by_id: dict[str, Any] = {}
+        for idx, track in enumerate(resolved):
+            metadata = getattr(track, "metadata", None)
+            genres = list(getattr(metadata, "genres", None) or [])
+            mix_id = f"mix-{idx}"
+            items.append(
+                {
+                    "queue_item_id": mix_id,
+                    "name": track.name,
+                    "artist": getattr(track, "artist_str", None)
+                    or getattr(track, "artist", None),
+                    "item_id": track.item_id,
+                    "provider": getattr(track, "provider", None)
+                    or getattr(track, "provider_instance", None),
+                    "genre": genres[0] if genres else None,
+                    "genres": genres,
+                    "explicit": getattr(metadata, "explicit", None) if metadata else None,
+                }
+            )
+            media_by_id[mix_id] = track
+
+        tasks = [
+            asyncio.create_task(
+                self._analysis(
+                    item["item_id"],
+                    item["provider"],
+                    {k: item[k] for k in ("genre", "genres", "explicit") if k in item},
+                    analysis_provider,
+                )
+            )
+            for item in items
+        ]
+        analyses = await asyncio.gather(*tasks, return_exceptions=True)
+        analyzed: list[dict[str, Any]] = []
+        for item, result in zip(items, analyses, strict=True):
+            analysis = None if isinstance(result, Exception) else result
+            if isinstance(result, Exception):
+                self.logger.debug("Smart DJ analysis failed for %s: %s", item["item_id"], result)
+            analyzed.append({**item, "analysis": analysis})
+
+        optimized = beam_optimize(
+            analyzed,
+            None,
+            mode,
+            controls=control,
+            beam_width=max(4, min(32, control.lookahead * 3)),
+        )
+        if not optimized:
+            raise RuntimeError("Hard requirements are impossible with the current playlist")
+        ordered_media = [media_by_id[track["queue_item_id"]] for track in optimized]
+        if queue := self.mass.player_queues.get(queue_id):
+            self.logger.info(
+                "Smart DJ: mixing playlist %s/%s (%d tracks) on queue %s",
+                playlist_provider,
+                playlist_item_id,
+                len(ordered_media),
+                queue_id,
+            )
+            await self.mass.player_queues.play_media(
+                queue_id, ordered_media, option=QueueOption.PLAY
+            )
+        else:
+            raise RuntimeError(f"Queue not found: {queue_id}")
+        return {
+            "queue_id": queue_id,
+            "playlist_provider": playlist_provider,
+            "playlist_item_id": playlist_item_id,
+            "count": len(ordered_media),
+            "tracks": optimized,
+        }
+
+    async def rank_queue(
+        self,
+        queue_id: str,
+        bpm_tolerance: float = 0.08,
+        prefer_keys: bool = True,
+        preserve_variety: bool = True,
+        mode: str = "ai_dj",
+        controls: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Optimize the upcoming queue under an explicit user control contract."""
+        raw = dict(controls or {})
+        apply = bool(raw.pop("apply", False))
+        analysis_provider = str(raw.get("analysis_provider", "auto"))
+        snapshot = await self.analyze(queue_id, analysis_provider=analysis_provider)
+        tracks = snapshot["tracks"]
+        if len(tracks) < 2:
+            return snapshot
+
+        control = self._parse_controls(raw, bpm_tolerance, prefer_keys, preserve_variety, mode)
         if not control.smart_reorder_enabled:
             if apply:
                 # crossfade is a per-player config setting on this server version;
@@ -333,6 +457,7 @@ class SmartDJProvider(PluginProvider):
             # available to any authenticated user.
             ("smart_dj/analyze", self.analyze, None),
             ("smart_dj/rank_queue", self.rank_queue, Scope.LIBRARY_WRITE),
+            ("smart_dj/mix_playlist", self.mix_playlist, Scope.LIBRARY_WRITE),
             ("smart_dj/status", self.status, None),
             ("smart_dj/capabilities", self.capabilities, None),
         )

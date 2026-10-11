@@ -206,16 +206,23 @@
     if (listEl.__smartDjInjected) return;
     listEl.__smartDjInjected = true;
 
-    var sortItem = makeListItem('Smart DJ Queue', 'mdi-music-note-list', async function () {
+    var mixItem = makeListItem('Smart DJ Mix', 'mdi-music-note-list', async function () {
+      var pl = getPlaylistFromURL();
+      if (!pl) { showToast('Open a playlist first', '#b71c1c'); return; }
       var queueId = await getActiveQueueId();
       if (!queueId) { showToast('No active player found', '#b71c1c'); return; }
-      showToast('Smart DJ is reordering the queue…', '#1565C0');
-      var res = await callAPI('smart_dj/rank_queue', {
-        queue_id: queueId,
-        controls: { apply: true },
-      });
-      var count = (res.tracks || []).length;
-      showToast('Reordered ' + count + ' track(s)', '#1b5e20');
+      showToast('Smart DJ is mixing this playlist…', '#1565C0');
+      try {
+        var res = await callAPI('smart_dj/mix_playlist', {
+          queue_id: queueId,
+          playlist_provider: pl.provider,
+          playlist_item_id: pl.item_id,
+          controls: {},
+        });
+        showToast('Mixed ' + (res.count || 0) + ' track(s) — now playing', '#1b5e20');
+      } catch (err) {
+        showToast('Smart DJ error: ' + err.message, '#b71c1c');
+      }
     });
 
     var capsItem = makeListItem('Smart DJ capabilities', 'mdi-information-outline', async function () {
@@ -228,7 +235,7 @@
     });
 
     listEl.appendChild(makeDivider());
-    listEl.appendChild(sortItem);
+    listEl.appendChild(mixItem);
     listEl.appendChild(capsItem);
   }
 
