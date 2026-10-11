@@ -6,7 +6,10 @@ from music_assistant.providers.smart_dj.engine import (
     SignalControl,
     score_candidate,
 )
-from music_assistant.providers.smart_dj.provider import _camelot_from_key, _upcoming_queue_window
+from music_assistant.providers.smart_dj.provider import (
+    _camelot_from_key,
+    _upcoming_queue_window,
+)
 
 
 def test_camelot_conversion() -> None:
