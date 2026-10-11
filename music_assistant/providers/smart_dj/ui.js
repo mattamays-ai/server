@@ -98,6 +98,74 @@
     return m ? { provider: m[1], item_id: m[2] } : null;
   }
 
+  // Load the preferences saved by the Smart DJ view (localStorage
+  // smart-dj.controls.v1, camelCase) and map them to API controls
+  // (snake_case) so menu actions honor the user's configured DJ behavior
+  // (e.g. transition_bars) instead of falling back to engine defaults.
+  function loadSavedControls(extra) {
+    var saved = {};
+    try { saved = JSON.parse(localStorage.getItem('smart-dj.controls.v1') || '{}') || {}; } catch (_) {}
+    var out = {};
+    var map = {
+      mode: 'mode',
+      bpmMin: 'bpm_min',
+      bpmMax: 'bpm_max',
+      maxBpmJump: 'max_bpm_jump',
+      bpmTolerance: 'bpm_tolerance',
+      keyRelation: 'key_relation',
+      instrumental: 'instrumental',
+      explicit: 'explicit',
+      transitionBars: 'transition_bars',
+      lookahead: 'lookahead',
+      maxArtistRepeat: 'max_artist_repeat',
+      transitionAggressiveness: 'transition_aggressiveness',
+      automix: 'automix_enabled',
+      smartReorder: 'smart_reorder_enabled',
+      preserveVariety: 'preserve_variety',
+      endTrackId: 'end_track_id',
+    };
+    for (var k in map) {
+      if (saved[k] !== undefined && saved[k] !== null) out[map[k]] = saved[k];
+    }
+    if (saved.signals) {
+      for (var s in saved.signals) out[s] = saved.signals[s];
+    }
+    if (extra) {
+      for (var e in extra) out[e] = extra[e];
+    }
+    return out;
+  }
+
+  // Full API args for a Smart DJ command: mode/bpm_tolerance/prefer_keys/
+  // preserve_variety are top-level command args, everything else rides in
+  // controls. Mirrors how the Smart DJ view calls rank_queue.
+  function buildSavedArgs(extra) {
+    var c = loadSavedControls();
+    var top = {
+      mode: c.mode,
+      bpm_tolerance: c.bpm_tolerance,
+      prefer_keys: c.key_relation !== undefined ? c.key_relation !== 'any' : undefined,
+      preserve_variety: c.preserve_variety,
+    };
+    delete c.mode; delete c.bpm_tolerance;
+    delete c.key_relation; delete c.preserve_variety;
+    var args = {};
+    for (var k in top) {
+      if (top[k] !== undefined) args[k] = top[k];
+    }
+    args.controls = c;
+    if (extra) {
+      for (var e in extra) {
+        if (e === 'controls' || e === 'apply') {
+          args.controls[e] = extra[e];
+        } else {
+          args[e] = extra[e];
+        }
+      }
+    }
+    return args;
+  }
+
   // ─────────────────────────── Toast notification ─────────────────────────────
 
   function showToast(text, color) {
@@ -178,10 +246,10 @@
       var queueId = await getActiveQueueId();
       if (!queueId) { showToast('No active player found', '#b71c1c'); return; }
       showToast('Smart DJ is reordering the queue…', '#1565C0');
-      var res = await callAPI('smart_dj/rank_queue', {
+      var res = await callAPI('smart_dj/rank_queue', buildSavedArgs({
         queue_id: queueId,
-        controls: { apply: true },
-      });
+        apply: true,
+      }));
       var count = (res.tracks || []).length;
       showToast('Reordered ' + count + ' track(s)', '#1b5e20');
     });
@@ -213,12 +281,11 @@
       if (!queueId) { showToast('No active player found', '#b71c1c'); return; }
       showToast('Smart DJ is mixing this playlist…', '#1565C0');
       try {
-        var res = await callAPI('smart_dj/mix_playlist', {
+        var res = await callAPI('smart_dj/mix_playlist', buildSavedArgs({
           queue_id: queueId,
           playlist_provider: pl.provider,
           playlist_item_id: pl.item_id,
-          controls: {},
-        });
+        }));
         showToast('Mixed ' + (res.count || 0) + ' track(s) — now playing', '#1b5e20');
       } catch (err) {
         showToast('Smart DJ error: ' + err.message, '#b71c1c');
