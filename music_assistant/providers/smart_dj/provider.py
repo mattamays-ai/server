@@ -85,6 +85,15 @@ def _camelot_from_key(key: str | None, mode: str | None) -> str | None:
     return (minor_keys if minor else major_keys).get(normalized)
 
 
+def _upcoming_queue_window(
+    items: list[dict[str, Any]], current_index: int, limit: int
+) -> list[dict[str, Any]]:
+    """Return the current queue item and upcoming items, preserving queue positions."""
+    start = max(0, current_index)
+    count = max(1, min(limit, 100))
+    return [item for item in items if item.get("queue_index", -1) >= start][:count]
+
+
 class SmartDJProvider(PluginProvider):
     """Native Smart DJ controller and Musicae enrichment client."""
 
@@ -92,19 +101,25 @@ class SmartDJProvider(PluginProvider):
         self, queue_id: str, limit: int = 40, analysis_provider: str = "auto"
     ) -> dict[str, Any]:
         """Analyze the active queue and return DJ-ready metadata."""
-        items = (await self._queue_snapshot(queue_id))[: max(1, min(limit, 100))]
-        analyzed = []
-        tasks = [
-            asyncio.create_task(
-                self._analysis(
-                    item["item_id"],
-                    item["provider"],
-                    {k: item[k] for k in ("genre", "genres", "explicit") if k in item},
-                    analysis_provider,
-                )
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
+            raise RuntimeError(f"Queue not found: {queue_id}")
+        current_index = max(0, int(queue.current_index or 0))
+        items = _upcoming_queue_window(
+            await self._queue_snapshot(queue_id), current_index, limit
+        )
+
+        async def analyze_item(item: dict[str, Any]) -> dict[str, Any] | None:
+            if not item.get("item_id") or not item.get("provider"):
+                return None
+            return await self._analysis(
+                item["item_id"],
+                item["provider"],
+                {k: item[k] for k in ("genre", "genres", "explicit") if k in item},
+                analysis_provider,
             )
-            for item in items
-        ]
+
+        tasks = [asyncio.create_task(analyze_item(item)) for item in items]
         analyses = await asyncio.gather(*tasks, return_exceptions=True)
         for item, result in zip(items, analyses, strict=True):
             analysis = None if isinstance(result, Exception) else result
@@ -113,76 +128,6 @@ class SmartDJProvider(PluginProvider):
             analyzed.append({**item, "analysis": analysis})
         current = analyzed[0]["analysis"] if analyzed and analyzed[0].get("analysis") else None
         return {"queue_id": queue_id, "tracks": analyzed, "current": current}
-
-    def _parse_controls(
-        self,
-        raw: dict[str, Any],
-        bpm_tolerance: float,
-        prefer_keys: bool,
-        preserve_variety: bool,
-        mode: str,
-    ) -> DJControls:
-        """Build DJControls from raw API controls plus ranking defaults."""
-
-        def signal(name: str, fallback: str = "soft") -> SignalControl:
-            value = raw.get(name, fallback)
-            if isinstance(value, dict):
-                return SignalControl(
-                    state=str(value.get("state", fallback)),
-                    weight=max(0.0, float(value.get("weight", 1.0))),
-                )
-            return SignalControl(state=str(value), weight=1.0)
-
-        transition_bars = int(raw.get("transition_bars", 8))
-        if transition_bars not in {4, 8, 16, 32}:
-            raise RuntimeError("transition_bars must be one of 4, 8, 16, or 32")
-        overrides_raw = raw.get("transition_bars_overrides") or {}
-        if not isinstance(overrides_raw, dict):
-            raise RuntimeError("transition_bars_overrides must be an object of track id -> bars")
-        overrides: dict[str, int] = {}
-        for track_id, bars in overrides_raw.items():
-            try:
-                bars_int = int(bars)
-            except (TypeError, ValueError):
-                raise RuntimeError(f"Invalid transition bars value for {track_id}: {bars!r}")
-            if bars_int not in {0, 4, 8, 16, 32}:
-                raise RuntimeError(
-                    f"Invalid transition bars value for {track_id}: {bars_int} "
-                    "(must be 0 (hard cut), 4, 8, 16, or 32)"
-                )
-            overrides[str(track_id)] = bars_int
-        return DJControls(
-            bpm=signal("bpm"),
-            key=signal("key", "soft" if prefer_keys else "disabled"),
-            energy=signal("energy"),
-            danceability=signal("danceability"),
-            loudness=signal("loudness"),
-            genre=signal("genre"),
-            artist_spacing=signal("artist_spacing", "soft" if preserve_variety else "disabled"),
-            momentum=signal("momentum"),
-            clap=signal(CLAP_SIGNAL),
-            bpm_min=float(raw["bpm_min"]) if raw.get("bpm_min") is not None else None,
-            bpm_max=float(raw["bpm_max"]) if raw.get("bpm_max") is not None else None,
-            max_bpm_jump=float(raw["max_bpm_jump"])
-            if raw.get("max_bpm_jump") is not None
-            else None,
-            key_relation=str(raw.get("key_relation", "compatible")),
-            max_artist_repeat=max(0, int(raw.get("max_artist_repeat", 1))),
-            instrumental=str(raw.get("instrumental", "any")),
-            explicit=str(raw.get("explicit", "allow")),
-            transition_bars=transition_bars,
-            transition_bars_overrides=overrides,
-            automix_enabled=bool(raw.get("automix_enabled", False)),
-            smart_reorder_enabled=bool(raw.get("smart_reorder_enabled", True)),
-            lookahead=max(1, min(32, int(raw.get("lookahead", 4)))),
-            transition_aggressiveness=max(
-                0.0, min(1.0, float(raw.get("transition_aggressiveness", 0.5)))
-            ),
-            required_ids=frozenset(str(x) for x in raw.get("required_ids", [])),
-            excluded_ids=frozenset(str(x) for x in raw.get("excluded_ids", [])),
-            fixed_ids=frozenset(str(x) for x in raw.get("fixed_ids", [])),
-            end_track_id=str(raw["end_track_id"]) if raw.get("end_track_id") else None,
-        )
 
     async def mix_playlist(
         self,
@@ -212,7 +157,8 @@ class SmartDJProvider(PluginProvider):
         # Resolve lightweight item mappings to full tracks so genre metadata
         # (needed for analysis) is available.
         resolved: list[Any] = []
-        for track in playlist_tracks:
+        for playlist_track in playlist_tracks:
+            track = playlist_track
             if getattr(track, "metadata", None) is None and getattr(track, "item_id", None):
                 with suppress(Exception):
                     track = await self.mass.music.tracks.get(track.item_id, track.provider)
@@ -274,7 +220,7 @@ class SmartDJProvider(PluginProvider):
         if not optimized:
             raise RuntimeError("Hard requirements are impossible with the current playlist")
         ordered_media = [media_by_id[track["queue_item_id"]] for track in optimized]
-        if queue := self.mass.player_queues.get(queue_id):
+        if self.mass.player_queues.get(queue_id):
             self.logger.info(
                 "Smart DJ: mixing playlist %s/%s (%d tracks) on queue %s",
                 playlist_provider,
@@ -409,10 +355,10 @@ class SmartDJProvider(PluginProvider):
                 "musicae": bool(self._key()),
             },
             "mixing": {
-                "smart_fades": True,
-                "transition_planner": False,
-                "vocal_protection": True,
-                "bass_eq_management": True,
+                "smart_fades": False,
+                "transition_planner": True,
+                "vocal_protection": False,
+                "bass_eq_management": False,
                 "tempo_planning": True,
             },
             "analysis_providers": {
@@ -467,6 +413,8 @@ class SmartDJProvider(PluginProvider):
         """Set up the provider and its analysis cache and API handles."""
         super().__init__(mass, manifest, config, supported_features)
         self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._cache_lock = asyncio.Lock()
+        self._analysis_semaphore = asyncio.Semaphore(4)
         self._session: aiohttp.ClientSession | None = None
         self._handles: list[Any] = []
         self._cache_file = Path(self.mass.storage_path) / "smart_dj" / "analysis_cache.json"
@@ -592,22 +540,23 @@ class SmartDJProvider(PluginProvider):
 
     async def _save_cache(self) -> None:
         """Persist analysis cache atomically."""
-        try:
-            await asyncio.to_thread(self._cache_file.parent.mkdir, parents=True, exist_ok=True)
-            wall_now = time.time()
-            loop_now = asyncio.get_running_loop().time()
-            payload = {
-                key: {
-                    "saved_at": wall_now - max(0.0, loop_now - timestamp),
-                    "value": value,
+        async with self._cache_lock:
+            try:
+                await asyncio.to_thread(self._cache_file.parent.mkdir, parents=True, exist_ok=True)
+                wall_now = time.time()
+                loop_now = asyncio.get_running_loop().time()
+                payload = {
+                    key: {
+                        "saved_at": wall_now - max(0.0, loop_now - timestamp),
+                        "value": value,
+                    }
+                    for key, (timestamp, value) in self._cache.items()
                 }
-                for key, (timestamp, value) in self._cache.items()
-            }
-            tmp = self._cache_file.with_suffix(".tmp")
-            await asyncio.to_thread(tmp.write_text, json.dumps(payload))
-            await asyncio.to_thread(tmp.replace, self._cache_file)
-        except OSError as err:
-            self.logger.warning("Could not save Smart DJ cache: %s", err)
+                tmp = self._cache_file.with_suffix(".tmp")
+                await asyncio.to_thread(tmp.write_text, json.dumps(payload))
+                await asyncio.to_thread(tmp.replace, self._cache_file)
+            except OSError as err:
+                self.logger.warning("Could not save Smart DJ cache: %s", err)
 
     def _key(self) -> str | None:
         value = self.config.get_value(CONF_RAPIDAPI_KEY)
@@ -625,7 +574,10 @@ class SmartDJProvider(PluginProvider):
             self._session = aiohttp.ClientSession()
         headers = {"X-RapidAPI-Key": key, "X-RapidAPI-Host": MUSICAE_HOST}
         async with self._session.get(
-            f"{MUSICAE_BASE}{path}", params=params, headers=headers
+            f"{MUSICAE_BASE}{path}",
+            params=params,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=20, connect=5),
         ) as response:
             if response.status >= 400:
                 body = await response.text()
@@ -707,7 +659,11 @@ class SmartDJProvider(PluginProvider):
         if cached and now - cached[0] < CACHE_TTL:
             return cached[1]
 
-        data = await self._request(f"/v2/audio-analysis/{item_id}", {})
+        async with self._analysis_semaphore:
+            cached = self._cache.get(cache_key)
+            if cached and asyncio.get_running_loop().time() - cached[0] < CACHE_TTL:
+                return cached[1]
+            data = await self._request(f"/v2/audio-analysis/{item_id}", {})
         result = data.get("data") if isinstance(data.get("data"), dict) else data
         if not isinstance(result, dict):
             return None
@@ -768,16 +724,19 @@ class SmartDJProvider(PluginProvider):
         """Return a compact queue snapshot."""
         items = self.mass.player_queues.items(queue_id, limit=1000, offset=0)
         result: list[dict[str, Any]] = []
-        for item in items:
+        for queue_index, item in enumerate(items):
             media = item.media_item
-            provider = getattr(media, "provider", None) or getattr(media, "provider_instance", None)
-            item_id = getattr(media, "item_id", None)
-            if not provider or not item_id:
-                continue
-            metadata_obj = getattr(media, "metadata", None)
+            provider = (
+                (getattr(media, "provider", None) or getattr(media, "provider_instance", None))
+                if media
+                else None
+            )
+            item_id = getattr(media, "item_id", None) if media else None
+            metadata_obj = getattr(media, "metadata", None) if media else None
             genres = getattr(metadata_obj, "genres", None) if metadata_obj else None
             result.append(
                 {
+                    "queue_index": queue_index,
                     "queue_item_id": item.queue_item_id,
                     "name": item.name,
                     "artist": getattr(media, "artist_str", None) or getattr(media, "artist", None),
@@ -789,3 +748,73 @@ class SmartDJProvider(PluginProvider):
                 }
             )
         return result
+
+    def _parse_controls(
+        self,
+        raw: dict[str, Any],
+        bpm_tolerance: float,
+        prefer_keys: bool,
+        preserve_variety: bool,
+        mode: str,
+    ) -> DJControls:
+        """Build DJControls from raw API controls plus ranking defaults."""
+
+        def signal(name: str, fallback: str = "soft") -> SignalControl:
+            value = raw.get(name, fallback)
+            if isinstance(value, dict):
+                return SignalControl(
+                    state=str(value.get("state", fallback)),
+                    weight=max(0.0, float(value.get("weight", 1.0))),
+                )
+            return SignalControl(state=str(value), weight=1.0)
+
+        transition_bars = int(raw.get("transition_bars", 8))
+        if transition_bars not in {4, 8, 16, 32}:
+            raise RuntimeError("transition_bars must be one of 4, 8, 16, or 32")
+        overrides_raw = raw.get("transition_bars_overrides") or {}
+        if not isinstance(overrides_raw, dict):
+            raise TypeError("transition_bars_overrides must be an object of track id -> bars")
+        overrides: dict[str, int] = {}
+        for track_id, bars in overrides_raw.items():
+            try:
+                bars_int = int(bars)
+            except (TypeError, ValueError):
+                raise RuntimeError(f"Invalid transition bars value for {track_id}: {bars!r}")
+            if bars_int not in {0, 4, 8, 16, 32}:
+                raise RuntimeError(
+                    f"Invalid transition bars value for {track_id}: {bars_int} "
+                    "(must be 0 (hard cut), 4, 8, 16, or 32)"
+                )
+            overrides[str(track_id)] = bars_int
+        return DJControls(
+            bpm=signal("bpm"),
+            key=signal("key", "soft" if prefer_keys else "disabled"),
+            energy=signal("energy"),
+            danceability=signal("danceability"),
+            loudness=signal("loudness"),
+            genre=signal("genre"),
+            artist_spacing=signal("artist_spacing", "soft" if preserve_variety else "disabled"),
+            momentum=signal("momentum"),
+            clap=signal(CLAP_SIGNAL),
+            bpm_min=float(raw["bpm_min"]) if raw.get("bpm_min") is not None else None,
+            bpm_max=float(raw["bpm_max"]) if raw.get("bpm_max") is not None else None,
+            max_bpm_jump=float(raw["max_bpm_jump"])
+            if raw.get("max_bpm_jump") is not None
+            else None,
+            key_relation=str(raw.get("key_relation", "compatible")),
+            max_artist_repeat=max(0, int(raw.get("max_artist_repeat", 1))),
+            instrumental=str(raw.get("instrumental", "any")),
+            explicit=str(raw.get("explicit", "allow")),
+            transition_bars=transition_bars,
+            transition_bars_overrides=overrides,
+            automix_enabled=bool(raw.get("automix_enabled", False)),
+            smart_reorder_enabled=bool(raw.get("smart_reorder_enabled", True)),
+            lookahead=max(1, min(32, int(raw.get("lookahead", 4)))),
+            transition_aggressiveness=max(
+                0.0, min(1.0, float(raw.get("transition_aggressiveness", 0.5)))
+            ),
+            required_ids=frozenset(str(x) for x in raw.get("required_ids", [])),
+            excluded_ids=frozenset(str(x) for x in raw.get("excluded_ids", [])),
+            fixed_ids=frozenset(str(x) for x in raw.get("fixed_ids", [])),
+            end_track_id=str(raw["end_track_id"]) if raw.get("end_track_id") else None,
+        )
