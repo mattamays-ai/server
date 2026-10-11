@@ -79,8 +79,11 @@ def _automix_durations(tracks: list[dict[str, Any]], control: DJControls) -> dic
     durations: dict[str, float] = {}
     for track in tracks:
         analysis = track.get("analysis") or {}
+        raw_bpm = analysis.get("bpm") or track.get("bpm")
+        if raw_bpm is None:
+            continue
         try:
-            bpm = float(analysis.get("bpm") or track.get("bpm"))
+            bpm = float(raw_bpm)
         except (TypeError, ValueError):
             continue
         if bpm <= 0:
