@@ -419,10 +419,19 @@ class _IncomingFadePrefetcher:
             or not audio_buffer.is_valid()
         ):
             return
+        # an AutoMix-pinned length wins over both the smart default and the
+        # configured standard duration
+        automix_duration = self._audio.get_automix_crossfade_duration(
+            next_item.queue_item_id
+        )
         overlap: float = (
-            SMART_CROSSFADE_DURATION
-            if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
-            else standard_crossfade_duration
+            automix_duration
+            if automix_duration is not None
+            else (
+                SMART_CROSSFADE_DURATION
+                if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
+                else standard_crossfade_duration
+            )
         )
         # never read a track to its end in the background: that would report it to its
         # provider as streamed before a single second of it has reached the player.
@@ -570,6 +579,10 @@ class StreamsAudio:
         # The speaker asks for the next item's url before the outgoing stream is done,
         # so without this the handoff is a race the fade loses.
         self._crossfade_pending: dict[str, tuple[str, asyncio.Event]] = {}
+        # Smart DJ AutoMix: pinned per-queue-item crossfade lengths in seconds
+        # (queue_item_id -> seconds). Empty unless a Smart DJ plan with automix
+        # engaged pinned custom mix lengths.
+        self._automix_durations: dict[str, float] = {}
         self._smart_fades_mixer: SmartFadesMixer | None = None
         # serializes buffer preparation per queue item, so concurrent callers share
         # the single source (and the single capacity reselection) instead of racing
@@ -1793,6 +1806,23 @@ class StreamsAudio:
             )
             self._notify_provider_streamed(streamdetails, finished, seconds_streamed)
 
+    def set_automix_durations(self, durations: dict[str, float]) -> None:
+        """
+        Pin per-queue-item crossfade lengths (seconds), set by the Smart DJ provider.
+
+        Replaces the whole map: a Smart DJ apply with automix disabled pins an
+        empty map, which releases any previously pinned custom lengths.
+        """
+        self._automix_durations = {
+            str(item_id): float(secs)
+            for item_id, secs in durations.items()
+            if float(secs) > 0
+        }
+
+    def get_automix_crossfade_duration(self, queue_item_id: str) -> float | None:
+        """Return the pinned AutoMix crossfade length for a queue item, if any."""
+        return self._automix_durations.get(str(queue_item_id))
+
     async def get_queue_item_stream_with_smartfade(
         self,
         player: Player,
@@ -1882,10 +1912,15 @@ class StreamsAudio:
         bytes_written = 0
         # calculate crossfade buffer size (the ceiling; a slow source's boundary
         # carries whatever its buffer held at EOF, which can be less)
+        automix_duration = self.get_automix_crossfade_duration(queue_item.queue_item_id)
         crossfade_buffer_duration = (
-            SMART_CROSSFADE_DURATION
-            if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
-            else standard_crossfade_duration
+            automix_duration
+            if automix_duration is not None
+            else (
+                SMART_CROSSFADE_DURATION
+                if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
+                else standard_crossfade_duration
+            )
         )
         crossfade_buffer_duration = min(
             crossfade_buffer_duration,

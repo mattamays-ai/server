@@ -856,6 +856,16 @@ class StreamsController(CoreController):
                 # can actually deliver (see _select_buffered_crossfade)
                 crossfade_mode = self.get_crossfade_mode(queue)
             if (
+                crossfade_mode != CrossfadeMode.SMART_CROSSFADE
+                and crossfade_mode != CrossfadeMode.DISABLED
+                and self.smart_fades_available
+                and self.audio.get_automix_crossfade_duration(queue_item.queue_item_id)
+                is not None
+            ):
+                # Smart DJ AutoMix pinned a custom transition for this item:
+                # prefer smart blending over the queue's default mode
+                crossfade_mode = CrossfadeMode.SMART_CROSSFADE
+            if (
                 crossfade_mode != CrossfadeMode.DISABLED
                 and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
             ):
@@ -1279,6 +1289,16 @@ class StreamsController(CoreController):
             if start_queue_item.media_type == MediaType.TRACK
             else CrossfadeMode.DISABLED
         )
+        if (
+            crossfade_mode != CrossfadeMode.SMART_CROSSFADE
+            and crossfade_mode != CrossfadeMode.DISABLED
+            and self.smart_fades_available
+            and self.audio.get_automix_crossfade_duration(start_queue_item.queue_item_id)
+            is not None
+        ):
+            # Smart DJ AutoMix pinned a custom transition for this item:
+            # prefer smart blending over the queue's default mode
+            crossfade_mode = CrossfadeMode.SMART_CROSSFADE
         flow_pcm_format = await self.audio.select_flow_pcm_format(
             player,
             start_streamdetails=start_queue_item.streamdetails,

@@ -48,6 +48,43 @@ UI_ROUTE = "/smart-dj-ui.js"
 UI_SCRIPT_TAG = '<script src="/smart-dj-ui.js" defer></script>'
 
 
+AUTOMIX_MAX_CROSSFADE = 60.0
+
+
+def _automix_durations(
+    tracks: list[dict[str, Any]], control: DJControls
+) -> dict[str, float]:
+    """Derive per-track crossfade lengths (seconds) from the plan's transition bars.
+
+    The transition INTO a track lasts as long as that track's bars (per-track
+    override first, then the global setting) at the track's own tempo. Tracks
+    without usable bpm get no pin and keep the engine's default length.
+    """
+    durations: dict[str, float] = {}
+    for track in tracks:
+        analysis = track.get("analysis") or {}
+        try:
+            bpm = float(analysis.get("bpm") or track.get("bpm"))
+        except (TypeError, ValueError):
+            continue
+        if bpm <= 0:
+            continue
+        bars = control.transition_bars_overrides.get(
+            str(track.get("queue_item_id"))
+        ) or control.transition_bars
+        try:
+            beats_per_bar = int(analysis.get("beats_per_bar") or 4)
+        except (TypeError, ValueError):
+            beats_per_bar = 4
+        if beats_per_bar <= 0:
+            beats_per_bar = 4
+        # one bar lasts beats_per_bar beats at `bpm` beats a minute; capped so a
+        # slow 32-bar pin can't demand an absurd PCM hold-back
+        durations[str(track.get("queue_item_id"))] = round(
+            min(int(bars) * beats_per_bar * 60.0 / bpm, AUTOMIX_MAX_CROSSFADE), 2
+        )
+    return durations
+
 def _camelot_from_key(key: str | None, mode: str | None) -> str | None:
     """Convert Music Assistant key/mode to Camelot notation."""
     if not key or not mode:
@@ -195,6 +232,9 @@ class SmartDJProvider(PluginProvider):
                     "(must be 0 (hard cut), 4, 8, 16, or 32)"
                 )
             overrides[str(track_id)] = bars_int
+        key_relation = str(raw.get("key_relation", "compatible"))
+        if key_relation not in {"any", "same", "compatible", "soft"}:
+            raise RuntimeError("key_relation must be one of any, same, compatible, soft")
         return DJControls(
             bpm=signal("bpm"),
             key=signal("key", "soft" if prefer_keys else "disabled"),
@@ -210,7 +250,7 @@ class SmartDJProvider(PluginProvider):
             max_bpm_jump=float(raw["max_bpm_jump"])
             if raw.get("max_bpm_jump") is not None
             else None,
-            key_relation=str(raw.get("key_relation", "compatible")),
+            key_relation=key_relation,
             max_artist_repeat=max(0, int(raw.get("max_artist_repeat", 1))),
             instrumental=str(raw.get("instrumental", "any")),
             explicit=str(raw.get("explicit", "allow")),
@@ -218,7 +258,7 @@ class SmartDJProvider(PluginProvider):
             transition_bars_overrides=overrides,
             automix_enabled=bool(raw.get("automix_enabled", False)),
             smart_reorder_enabled=bool(raw.get("smart_reorder_enabled", True)),
-            lookahead=max(1, min(32, int(raw.get("lookahead", 4)))),
+            lookahead=max(1, min(32, int(raw.get("lookahead", 8)))),
             transition_aggressiveness=max(
                 0.0, min(1.0, float(raw.get("transition_aggressiveness", 0.5)))
             ),
@@ -242,6 +282,7 @@ class SmartDJProvider(PluginProvider):
         """Play a playlist on the given queue in Smart DJ (beat/key) order."""
         raw = dict(controls or {})
         analysis_provider = str(raw.get("analysis_provider", "auto"))
+        automix_info: dict[str, Any] | None = None
         control = self._parse_controls(raw, bpm_tolerance, prefer_keys, preserve_variety, mode)
 
         playlist_tracks: list[Any] = [
@@ -321,7 +362,7 @@ class SmartDJProvider(PluginProvider):
             None,
             selected_mode,
             controls=control,
-            beam_width=max(4, min(32, control.lookahead * 3)),
+            beam_width=max(4, min(96, control.lookahead * 3)),
         )
         if not optimized:
             raise RuntimeError("Hard requirements are impossible with the current playlist")
@@ -337,6 +378,19 @@ class SmartDJProvider(PluginProvider):
             await self.mass.player_queues.play_media(
                 queue_id, ordered_media, option=QueueOption.PLAY
             )
+            if control.automix_enabled:
+                # Real AutoMix execution on the freshly mixed queue (smart fades
+                # when analysis is available, standard crossfade otherwise).
+                self.mass.player_queues.set_crossfade(queue_id, True)
+                self.mass.streams.audio.set_automix_durations(
+                    _automix_durations(analyzed, control)
+                )
+                automix_info = {
+                    "enabled": True,
+                    "mode": "smart"
+                    if self.mass.streams.smart_fades_available
+                    else "standard",
+                }
         else:
             raise RuntimeError(f"Queue not found: {queue_id}")
         return {
@@ -345,6 +399,7 @@ class SmartDJProvider(PluginProvider):
             "playlist_item_id": playlist_item_id,
             "count": len(ordered_media),
             "tracks": optimized,
+            "automix": automix_info,
         }
 
     async def rank_queue(
@@ -367,19 +422,25 @@ class SmartDJProvider(PluginProvider):
 
         control = self._parse_controls(raw, bpm_tolerance, prefer_keys, preserve_variety, mode)
         if not control.smart_reorder_enabled:
-            if apply:
-                # crossfade is a per-player config setting on this server version;
-                # there is no queue-level crossfade API to call
-                self.logger.debug(
-                    "Smart DJ: automix crossfade preference (%s) noted for %s; "
-                    "configure crossfade on the player itself",
-                    control.automix_enabled,
-                    queue_id,
+            if apply and control.automix_enabled:
+                # Real AutoMix execution: the queue-level crossfade toggle is a
+                # supported runtime command, so flipping it is safe even when no
+                # reorder is requested.
+                self.mass.player_queues.set_crossfade(queue_id, True)
+                self.mass.streams.audio.set_automix_durations(
+                    _automix_durations(tracks[1:], control)
                 )
+                automix_info = {
+                    "enabled": True,
+                    "mode": "smart"
+                    if self.mass.streams.smart_fades_available
+                    else "standard",
+                }
             return {
                 "queue_id": queue_id,
                 "tracks": tracks[1:],
                 "applied": apply,
+                "automix": automix_info,
                 "settings": {"controls": raw, "smart_reorder_enabled": False},
             }
 
@@ -396,11 +457,12 @@ class SmartDJProvider(PluginProvider):
             _merge_track(tracks[0]) if tracks else snapshot["current"],
             selected_mode,
             controls=control,
-            beam_width=max(4, min(32, control.lookahead * 3)),
+            beam_width=max(4, min(96, control.lookahead * 3)),
         )
         if not optimized and tracks[1:]:
             raise RuntimeError("Hard requirements are impossible with the current queue")
 
+        automix_info: dict[str, Any] | None = None
         if apply:
             queue = self.mass.player_queues.get(queue_id)
             if queue is None:
@@ -439,11 +501,29 @@ class SmartDJProvider(PluginProvider):
             if len(prefix) + len(ranked) + len(remainder) != len(items):
                 raise RuntimeError("Queue integrity check failed")
             self.mass.player_queues.update_items(queue_id, prefix + ranked + remainder)
+            if not control.automix_enabled:
+                # automix off in this plan: release any previously pinned lengths
+                self.mass.streams.audio.set_automix_durations({})
+            if control.automix_enabled:
+                # Real AutoMix execution: hand the queue to the streams engine's
+                # crossfade path (smart fades when analysis is available, standard
+                # otherwise). A plan with automix disabled never touches the toggle.
+                self.mass.player_queues.set_crossfade(queue_id, True)
+                self.mass.streams.audio.set_automix_durations(
+                    _automix_durations(optimized, control)
+                )
+                automix_info = {
+                    "enabled": True,
+                    "mode": "smart"
+                    if self.mass.streams.smart_fades_available
+                    else "standard",
+                }
         return {
             "queue_id": queue_id,
             "current_item_id": tracks[0]["queue_item_id"],
             "tracks": optimized,
             "applied": apply,
+            "automix": automix_info,
             "settings": {
                 "mode": mode,
                 "bpm_tolerance": bpm_tolerance,
@@ -462,7 +542,7 @@ class SmartDJProvider(PluginProvider):
             },
             "mixing": {
                 "smart_fades": True,
-                "transition_planner": False,
+                "transition_planner": True,
                 "vocal_protection": True,
                 "bass_eq_management": True,
                 "tempo_planning": True,

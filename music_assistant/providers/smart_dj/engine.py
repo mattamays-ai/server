@@ -69,7 +69,7 @@ class DJControls:
     transition_bars_overrides: dict[str, int] = field(default_factory=dict)
     automix_enabled: bool = False
     smart_reorder_enabled: bool = True
-    lookahead: int = 4
+    lookahead: int = 8
     transition_aggressiveness: float = 0.5
     required_ids: frozenset[str] = frozenset()
     excluded_ids: frozenset[str] = frozenset()
@@ -248,7 +248,10 @@ def _hard_fail(  # noqa: PLR0915 - every hard rule reads clearest inline
         elif abs(float(bpm) - float(a)) > controls.max_bpm_jump:
             violations.append("maximum BPM jump exceeded")
 
-    if controls.key_relation != "any" and current:
+    # "soft" deliberately skips the hard gate: an incompatible step becomes a
+    # scoring penalty (see _signal_values), so a scattered-key playlist always
+    # yields an order instead of failing as impossible
+    if controls.key_relation not in ("any", "soft") and current:
         a, b = current.get("camelot"), candidate.get("camelot")
         if not a or not b:
             violations.append("key unavailable for key constraint")
@@ -380,6 +383,14 @@ def _signal_values(
             total += 0.10
             total_weight += 0.10
             reasons.append("instrumental preference")
+    if controls.key_relation == "soft" and current:
+        a, b = current.get("camelot"), candidate.get("camelot")
+        if a and b and camelot_affinity(a, b) <= 0.0:
+            # soft key: an incompatible step drags the score instead of vetoing
+            # the candidate, so it is only chosen when nothing harmonic exists
+            total -= 0.35
+            total_weight += 0.35
+            reasons.append("key softened: incompatible step accepted")
     if total_weight == 0:
         return 0.5, reasons
     return max(0.0, min(1.0, total / total_weight)), reasons
