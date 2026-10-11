@@ -13,11 +13,11 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from aiohttp import web
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import QueueOption
+from music_assistant_models.enums import ConfigEntryType, QueueOption
 
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.models.plugin import PluginProvider
-from music_assistant_models.config_entries import ConfigEntry, ConfigEntryType
+from music_assistant_models.config_entries import ConfigEntry
 
 from .engine import (
     MODES,
