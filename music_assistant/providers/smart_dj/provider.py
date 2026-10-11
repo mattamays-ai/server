@@ -215,10 +215,29 @@ class SmartDJProvider(PluginProvider):
             by_id = {item.queue_item_id: item for item in items}
             prefix_len = (queue.current_index or 0) + 1
             prefix = items[:prefix_len]
-            ranked_ids = [track["queue_item_id"] for track in optimized]
-            ranked = [by_id[item_id] for item_id in ranked_ids if item_id in by_id]
-            if len(ranked) != len(ranked_ids):
-                raise RuntimeError("Queue changed while Smart DJ was planning")
+            # The plan was built from a snapshot taken before analysis/planning;
+            # the player may have advanced since. The fresh queue is ground
+            # truth: drop planned tracks that already slid into the now-playing
+            # prefix (or vanished) instead of failing the apply. Only an
+            # internally inconsistent partition is a real error.
+            prefix_ids = {item.queue_item_id for item in prefix}
+            ranked_ids = [
+                track["queue_item_id"]
+                for track in optimized
+                if track["queue_item_id"] not in prefix_ids
+                and track["queue_item_id"] in by_id
+            ]
+            dropped = len(optimized) - len(ranked_ids)
+            if dropped:
+                self.logger.info(
+                    "Smart DJ apply: dropped %d planned track(s) that are no "
+                    "longer upcoming on queue %s",
+                    dropped,
+                    queue_id,
+                )
+            ranked = [by_id[item_id] for item_id in ranked_ids]
+            if len({item.queue_item_id for item in ranked}) != len(ranked):
+                raise RuntimeError("Queue integrity check failed")
             ranked_set = set(ranked_ids)
             remainder = [
                 item for item in items[prefix_len:] if item.queue_item_id not in ranked_set
