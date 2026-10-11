@@ -12,12 +12,11 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from aiohttp import web
-from music_assistant_models.auth import Scope
-from music_assistant_models.enums import QueueOption
-
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.models.plugin import PluginProvider
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry, ConfigEntryType
+from music_assistant_models.enums import QueueOption
 
 from .engine import (
     MODES,
@@ -121,6 +120,7 @@ class SmartDJProvider(PluginProvider):
 
         tasks = [asyncio.create_task(analyze_item(item)) for item in items]
         analyses = await asyncio.gather(*tasks, return_exceptions=True)
+        analyzed: list[dict[str, Any]] = []
         for item, result in zip(items, analyses, strict=True):
             analysis = None if isinstance(result, Exception) else result
             if isinstance(result, Exception):
