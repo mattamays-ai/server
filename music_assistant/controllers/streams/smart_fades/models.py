@@ -235,6 +235,17 @@ class FadeOutTrim:
     trimmed_seconds: float
 
 
+@dataclass(frozen=True, slots=True)
+class BlendPrefs:
+    """Per-transition user preferences carried from Smart DJ into the planner."""
+
+    # Preferred tier: None = engine decides (auto); else a TransitionTier name.
+    preferred_tier: str | None = None
+    # Max BPM-difference percent the planner may time-stretch across.
+    # None = engine default (TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD).
+    max_stretch_pct: float | None = None
+
+
 class TransitionStrategy(StrEnum):
     """How a vocal-aware plan's final overlap was ultimately decided."""
 

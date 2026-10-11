@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.enums import CrossfadeMode
 
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
+from music_assistant.controllers.streams.smart_fades.models import BlendPrefs
 from music_assistant.controllers.streams.smart_fades.fades import (
     SmartCrossFade,
     SmartFade,
@@ -54,6 +55,7 @@ class SmartFadesMixer:
         mode: CrossfadeMode,
         fade_out_data: bytes,
         fade_in_bytes_len: int,
+        blend_prefs: BlendPrefs | None = None,
     ) -> SmartFade:
         """
         Pick the SmartFade implementation, prime its filters, and return it.
@@ -81,6 +83,7 @@ class SmartFadesMixer:
                 fade_out_bytes_len=len(fade_out_data),
                 fade_in_bytes_len=fade_in_bytes_len,
                 pcm_format=pcm_format,
+                blend_prefs=blend_prefs,
             )
         if smart_fade is None:
             smart_fade = await self._build_standard_crossfade(
@@ -207,6 +210,7 @@ class SmartFadesMixer:
         fade_out_bytes_len: int,
         fade_in_bytes_len: int,
         pcm_format: AudioFormat,
+        blend_prefs: BlendPrefs | None = None,
     ) -> tuple[SmartFade | None, AudioAnalysisData | None]:
         """
         Attempt to build a SmartCrossFade and retain outgoing analysis for fallback.
@@ -240,6 +244,7 @@ class SmartFadesMixer:
                 logger=self.logger,
                 fade_out_analysis=fade_out_analysis,
                 fade_in_analysis=fade_in_analysis,
+                blend_prefs=blend_prefs,
             )
             smart_fade.build(fade_out_bytes_len, fade_in_bytes_len, pcm_format)
         except SmartFadeNotApplicable as e:

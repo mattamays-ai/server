@@ -344,7 +344,9 @@ class TrimClosingAnchorGenerator(CandidateGenerator):
         if anchor - ctx.default_anchor < self._min_gap:
             return
         # ctx.tier is decided at the early anchor; the grid can be blendable at the audible end
-        _, tier = choose_tier(ctx.outgoing, ctx.incoming, anchor)
+        _, tier = choose_tier(
+            ctx.outgoing, ctx.incoming, anchor, preferred_tier=ctx.preferred_tier
+        )
         ladder = bars_ladder(ctx, tier)
         for bars in ladder:
             yield CandidateSpec(
@@ -420,7 +422,12 @@ class CandidateFactory:
         # a re-anchored tail can downgrade the tier (shorter/irregular grid); the
         # requested bar count still reflects the old tier, so cap it at the new
         # tier's largest rung or a long overlap ships without its tempo ramp
-        _, tier = choose_tier(self._ctx.outgoing, self._ctx.incoming, tail.effective_end)
+        _, tier = choose_tier(
+            self._ctx.outgoing,
+            self._ctx.incoming,
+            tail.effective_end,
+            preferred_tier=self._ctx.preferred_tier,
+        )
         bars_cap = bars_ladder(self._ctx, tier)[0]
         bars = min(spec.bars, bars_cap)
 

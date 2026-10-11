@@ -117,6 +117,8 @@
       explicit: 'explicit',
       transitionBars: 'transition_bars',
       lookahead: 'lookahead',
+      transitionStyle: 'transition_style',
+      beatStrictness: 'beat_strictness',
       maxArtistRepeat: 'max_artist_repeat',
       transitionAggressiveness: 'transition_aggressiveness',
       automix: 'automix_enabled',
@@ -164,6 +166,15 @@
       }
     }
     return args;
+  }
+
+  // Extract a human-readable message from an error. SmartDJError details
+  // surface as "code: detail" (e.g. "invalid_control: lookahead=104") —
+  // strip the code prefix and keep the detail for user-facing toasts.
+  function _humanError(err) {
+    var raw = String((err && err.message) || err);
+    var m = raw.match(/^[a-z_]+:\s*(.+)/);
+    return m ? m[1] : raw;
   }
 
   // ─────────────────────────── Toast notification ─────────────────────────────
@@ -220,7 +231,7 @@
       // Close the overlay before the async action starts
       document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       onClickAsync().catch(function (err) {
-        showToast('Smart DJ error: ' + err.message, '#b71c1c');
+        showToast('Smart DJ error: ' + _humanError(err), '#b71c1c');
       });
     });
     return item;
@@ -250,8 +261,18 @@
         queue_id: queueId,
         apply: true,
       }));
-      var count = (res.tracks || []).length;
-      showToast('Reordered ' + count + ' track(s)', '#1b5e20');
+      // H-1 honest toast: the backend reports applied=false (with a reason)
+      // when the queue was NOT mutated. Never assume success from a missing flag.
+      if (res.applied === false) {
+        var why = res.reason ? ' (' + res.reason.replace(/_/g, ' ') + ')' : '';
+        showToast('Queue unchanged — reorder was not applied' + why, '#e65100');
+      } else if (res.queue_changed === true) {
+        var count = (res.tracks || []).length;
+        showToast('Reordered ' + count + ' track(s)', '#1b5e20');
+      } else {
+        var resp = (res.tracks || []).length;
+        showToast('Request sent; ' + resp + ' track(s) in response', '#1565C0');
+      }
     });
 
     var analyzeItem = makeListItem('Analyze Queue (DJ)', 'mdi-waveform', async function () {
@@ -260,7 +281,14 @@
       showToast('Starting analysis…', '#1565C0');
       var res = await callAPI('smart_dj/analyze', { queue_id: queueId });
       var count = (res.tracks || []).length;
-      showToast('Analyzed ' + count + ' track(s)', '#0d47a1');
+      // M-8: the backend reports optimized_window / queue_item_count — surface
+      // the analysis window when it is smaller than the full queue.
+      var windowNote = '';
+      if (res.optimized_window != null && res.queue_item_count != null
+          && res.optimized_window < res.queue_item_count) {
+        windowNote = ' (window: ' + res.optimized_window + ' of ' + res.queue_item_count + ')';
+      }
+      showToast('Analyzed ' + count + ' track(s)' + windowNote, '#0d47a1');
     });
 
     listEl.appendChild(makeDivider());
@@ -286,9 +314,23 @@
           playlist_provider: pl.provider,
           playlist_item_id: pl.item_id,
         }));
-        showToast('Mixed ' + (res.count || 0) + ' track(s) — now playing', '#1b5e20');
+        showToast(res.resumed
+          ? ('Rebuilt from the remaining ' + (res.count || 0) + ' track(s) — current song kept playing')
+          : ('Mixed ' + (res.count || 0) + ' track(s) — now playing')
+          + (res.truncated ? ' (playlist capped at ' + (res.count || 0) + ' of ' + (res.playlist_total || 0) + ')' : ''), '#1b5e20');
       } catch (err) {
-        showToast('Smart DJ error: ' + err.message, '#b71c1c');
+        showToast('Smart DJ error: ' + _humanError(err), '#b71c1c');
+      }
+    });
+
+    var analyzeLibItem = makeListItem('Smart DJ: analyze library (Musicae)', 'mdi-library-music', async function () {
+      showToast('Library analysis started (newest first, batches of 5)…', '#1565C0');
+      try {
+        var res = await callAPI('smart_dj/analyze_library', { limit: 100, source: 'recently_added' });
+        showToast('Library analysis done: ' + (res.fetched || 0) + ' analyzed of ' + (res.scanned || 0) + ' scanned'
+          + (res.quota_exhausted ? ' (Musicae quota reached — try again tomorrow or upgrade the plan)' : ''), '#1b5e20');
+      } catch (err) {
+        showToast('Library analysis error: ' + err.message, '#b71c1c');
       }
     });
 
@@ -303,6 +345,7 @@
 
     listEl.appendChild(makeDivider());
     listEl.appendChild(mixItem);
+    listEl.appendChild(analyzeLibItem);
     listEl.appendChild(capsItem);
   }
 

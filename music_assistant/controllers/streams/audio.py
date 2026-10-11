@@ -115,6 +115,21 @@ from music_assistant.controllers.streams.ogg_handler import get_chained_ogg_stre
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
 from music_assistant.controllers.streams.smart_fades.fades import SmartFade, StandardCrossFade
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
+from music_assistant.controllers.streams.smart_fades.models import BlendPrefs
+
+# beat_strictness -> max BPM-difference percent the planner may stretch across
+# (normal matches the engine's own default gate)
+BEAT_STRICTNESS_STRETCH_PCT = {"strict": 6.0, "normal": 8.0, "aggressive": 12.0}
+# user-facing blend style -> planner TransitionTier value ("auto" and any
+# unknown style map to no tier preference). "energy" is the medium,
+# key-clash-tolerant blend (TEMPO_BLEND); "quick_cut" is the short
+# downbeat-snapped fade (QUICK_FADE). These MUST be tier values, not the
+# style names themselves -- TransitionTier() raises on anything else.
+BLEND_STYLE_TO_TIER = {
+    "full_blend": "full_blend",
+    "energy": "tempo_blend",
+    "quick_cut": "quick_fade",
+}
 from music_assistant.helpers import ssl as ssl_util
 from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.audio import (
@@ -583,6 +598,9 @@ class StreamsAudio:
         # (queue_item_id -> seconds). Empty unless a Smart DJ plan with automix
         # engaged pinned custom mix lengths.
         self._automix_durations: dict[str, float] = {}
+        # per-queue-item blend preferences (transition_style, beat_strictness)
+        # pinned by the Smart DJ provider alongside the duration pins
+        self._automix_blend_prefs: dict[str, tuple[str, str]] = {}
         self._smart_fades_mixer: SmartFadesMixer | None = None
         # serializes buffer preparation per queue item, so concurrent callers share
         # the single source (and the single capacity reselection) instead of racing
@@ -1823,6 +1841,38 @@ class StreamsAudio:
         """Return the pinned AutoMix crossfade length for a queue item, if any."""
         return self._automix_durations.get(str(queue_item_id))
 
+    def set_automix_blend_prefs(self, prefs: dict[str, tuple[str, str]]) -> None:
+        """
+        Pin per-queue-item blend preferences (style, strictness), set by Smart DJ.
+
+        Replaces the whole map; pin an empty map to release previously pinned
+        preferences (an AutoMix-off apply does exactly that).
+        """
+        self._automix_blend_prefs = {
+            str(item_id): (str(style), str(strictness))
+            for item_id, (style, strictness) in prefs.items()
+        }
+
+    def get_automix_blend_prefs(self, queue_item_id: str) -> tuple[str, str] | None:
+        """Return the pinned (transition_style, beat_strictness) for a queue item."""
+        return self._automix_blend_prefs.get(str(queue_item_id))
+
+    def _automix_prefs_for(self, queue_item_id: str) -> BlendPrefs | None:
+        """Translate pinned (style, strictness) strings into planner BlendPrefs."""
+        pinned = self._automix_blend_prefs.get(str(queue_item_id))
+        if pinned is None:
+            return None
+        style, strictness = pinned
+        stretch_pct = BEAT_STRICTNESS_STRETCH_PCT.get(strictness)
+        # user-facing style names are NOT tier names: map them onto the
+        # planner's TransitionTier values (an unknown style or "auto" means
+        # no tier preference). Passing the raw style string through would
+        # raise ValueError inside TransitionTier() at blend-build time.
+        preferred = BLEND_STYLE_TO_TIER.get(style)
+        if preferred is None and stretch_pct is None:
+            return None
+        return BlendPrefs(preferred_tier=preferred, max_stretch_pct=stretch_pct)
+
     async def get_queue_item_stream_with_smartfade(
         self,
         player: Player,
@@ -2112,6 +2162,7 @@ class StreamsAudio:
                         mode=transition_mode,
                         fade_out_data=fade_out_data,
                         fade_in_bytes_len=fade_in_buffer_size,
+                        blend_prefs=self._automix_prefs_for(next_queue_item.queue_item_id),
                     )
                     # the mixer degrades to a standard fade when the smart one cannot be planned
                     applied_mode = (
@@ -2587,6 +2638,7 @@ class StreamsAudio:
                             mode=transition_mode,
                             fade_out_data=last_fadeout_part,
                             fade_in_bytes_len=incoming_crossfade_size,
+                            blend_prefs=self._automix_prefs_for(queue_track.queue_item_id),
                         )
                         build_seconds = asyncio.get_event_loop().time() - build_started
                         timing_info = crossfade_smart_fade.timing_info

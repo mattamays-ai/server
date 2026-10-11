@@ -20,7 +20,10 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.controllers.streams.smart_fades.models import SmartFadeNotApplicable
+from music_assistant.controllers.streams.smart_fades.models import (
+    BlendPrefs,
+    SmartFadeNotApplicable,
+)
 
 from .assembly import EmergencyHandoffFactory, FallbackCrossfadeFactory, PlanAssembler
 from .candidates import (
@@ -75,6 +78,7 @@ class SmartCrossFadePlanner(TransitionPlanner):
         fade_out_analysis: AudioAnalysisData,
         fade_in_analysis: AudioAnalysisData,
         buffer_duration: float,
+        blend_prefs: BlendPrefs | None = None,
     ) -> TransitionPlan:
         """
         Build a smart-crossfade ``TransitionPlan`` from the two tracks' analysis.
@@ -86,9 +90,14 @@ class SmartCrossFadePlanner(TransitionPlanner):
         :param fade_out_analysis: Analysis data for the outgoing track.
         :param fade_in_analysis: Analysis data for the incoming track.
         :param buffer_duration: Length in seconds of the available fade-out holdback.
+        :param blend_prefs: Optional Smart DJ blend-style preferences.
         """
         ctx = build_transition_context(
-            fade_out_analysis, fade_in_analysis, buffer_duration, self.logger
+            fade_out_analysis,
+            fade_in_analysis,
+            buffer_duration,
+            self.logger,
+            blend_prefs=blend_prefs,
         )
         factory = CandidateFactory(ctx, self.logger)
         specs = [spec for generator in default_generators() for spec in generator.generate(ctx)]

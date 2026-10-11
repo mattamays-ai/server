@@ -33,6 +33,7 @@ from music_assistant.controllers.streams.smart_fades.helpers import (
     keys_compatible,
 )
 from music_assistant.controllers.streams.smart_fades.models import (
+    BlendPrefs,
     Deck,
     SmartFadeNotApplicable,
     TransitionTier,
@@ -132,6 +133,9 @@ class TransitionContext:
     vocal_in_scoring: VocalMask | None
     natural_entry: float
     protective_downbeats: tuple[float, ...]
+    # user blend-style preference (None = auto), honored by per-anchor re-derivations;
+    # defaulted so it must be the LAST field (dataclass ordering)
+    preferred_tier: TransitionTier | None = None
     # False when both decks read near-continuous vocal over the boundary: such
     # masks carry no structure to plan around (every candidate would collide),
     # so collision-based decisions must abstain rather than veto everything
@@ -143,6 +147,7 @@ def build_transition_context(
     fade_in_analysis: AudioAnalysisData,
     buffer_duration: float,
     logger: logging.Logger,
+    blend_prefs: BlendPrefs | None = None,
 ) -> TransitionContext:
     """
     Build the immutable per-transition context from the two tracks' analysis.
@@ -247,7 +252,22 @@ def build_transition_context(
     # the tier reads the kick-folded anchor (the old planner's effective_end),
     # never the pure full-band mix_out_anchor: a kick-timed track's blendability
     # window ends where its kick dies, exactly as the old masked grid did
-    cross_meter, tier = choose_tier(outgoing, incoming, tier_anchor)
+    preferred_tier: TransitionTier | None = (
+        TransitionTier(blend_prefs.preferred_tier)
+        if blend_prefs is not None and blend_prefs.preferred_tier is not None
+        else None
+    )
+    cross_meter, tier = choose_tier(
+        outgoing,
+        incoming,
+        tier_anchor,
+        preferred_tier=preferred_tier,
+        stretch_threshold=(
+            TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD
+            if blend_prefs is None or blend_prefs.max_stretch_pct is None
+            else blend_prefs.max_stretch_pct
+        ),
+    )
     bpm_diff_percent = _bpm_diff_percent(outgoing.bpm, incoming.bpm)
 
     # fade detection is a per-transition fact regardless of which anchor a
@@ -325,6 +345,7 @@ def build_transition_context(
         coda_zone=coda_zone,
         tier=tier,
         cross_meter=cross_meter,
+        preferred_tier=preferred_tier,
         bpm_diff_percent=bpm_diff_percent,
         vocal_out_placement=vocal_out_placement,
         vocal_in_placement=vocal_in_placement,
@@ -584,17 +605,29 @@ def choose_tier(
     outgoing: Deck,
     incoming: Deck,
     tier_anchor: float,
+    preferred_tier: TransitionTier | None = None,
+    stretch_threshold: float = TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD,
 ) -> tuple[bool, TransitionTier]:
-    """Pick the transition tier; anything that casts doubt on a long blend picks a shorter one."""
+    """Pick the transition tier; anything that casts doubt on a long blend picks a shorter one.
+
+    A ``preferred_tier`` (from a Smart DJ blend style) overrides the auto choice
+    only on a shared, blendable bar grid: cross-meter and unblendable tails
+    still always fall back to QUICK_FADE. ``stretch_threshold`` is the max
+    BPM-difference percent the planner will time-stretch across.
+    """
     cross_meter = outgoing.beats_per_bar != incoming.beats_per_bar
     if cross_meter:
         # no shared bar grid to beatmatch or blend across
         return cross_meter, TransitionTier.QUICK_FADE
     anchored_downbeats = outgoing.downbeats[outgoing.downbeats <= tier_anchor]
-    if not _tail_is_blendable(anchored_downbeats):
+    tail_blendable = _tail_is_blendable(anchored_downbeats)
+    if not tail_blendable:
         return cross_meter, TransitionTier.QUICK_FADE
-    if _bpm_diff_percent(outgoing.bpm, incoming.bpm) > TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
+    if _bpm_diff_percent(outgoing.bpm, incoming.bpm) > stretch_threshold:
         return cross_meter, TransitionTier.QUICK_FADE
+    if preferred_tier is not None:
+        # user style preference wins on a blendable shared grid
+        return cross_meter, preferred_tier
     out_a, in_a = outgoing.analysis, incoming.analysis
     # the 16-bar tier is earned by a verifiable energy anchor: without RMS data
     # the blend could land on a mastered fade-out unnoticed

@@ -70,6 +70,13 @@ class DJControls:
     automix_enabled: bool = False
     smart_reorder_enabled: bool = True
     lookahead: int = 8
+    # Blend style preference passed to the smart-fades planner: auto (engine
+    # decides), full_blend (force the 16-bar blend when the grid allows),
+    # energy (medium blend), quick_cut (always the short downbeat fade).
+    transition_style: str = "auto"
+    # Stretch gate: max BPM-difference percent the planner will time-stretch
+    # across. strict=6, normal=8 (engine default), aggressive=12.
+    beat_strictness: str = "normal"
     transition_aggressiveness: float = 0.5
     required_ids: frozenset[str] = frozenset()
     excluded_ids: frozenset[str] = frozenset()

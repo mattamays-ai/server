@@ -18,6 +18,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
 )
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.smart_fades.models import (
+    BlendPrefs,
     CrossfadeTimingInfo,
     SmartFadeNotApplicable,
     TransitionPlan,
@@ -310,6 +311,7 @@ class SmartCrossFade(SmartFade):
         logger: logging.Logger,
         fade_out_analysis: AudioAnalysisData,
         fade_in_analysis: AudioAnalysisData,
+        blend_prefs: BlendPrefs | None = None,
     ) -> None:
         """
         Initialize SmartCrossFade with analysis data.
@@ -317,8 +319,10 @@ class SmartCrossFade(SmartFade):
         :param logger: Logger for debug output.
         :param fade_out_analysis: Analysis data for the outgoing track.
         :param fade_in_analysis: Analysis data for the incoming track.
+        :param blend_prefs: Optional Smart DJ blend-style preferences.
         """
         super().__init__(logger)
+        self.blend_prefs = blend_prefs
         self.fade_out_analysis = fade_out_analysis
         self.fade_in_analysis = fade_in_analysis
         self.planner = SmartCrossFadePlanner(logger)
@@ -340,7 +344,7 @@ class SmartCrossFade(SmartFade):
             fade_out_bytes_len / pcm_format.pcm_sample_size,
         )
         self.plan = self.planner.plan(
-            self.fade_out_analysis, self.fade_in_analysis, buffer_duration
+            self.fade_out_analysis, self.fade_in_analysis, buffer_duration, self.blend_prefs
         )
         self.filters, self.timing_info = self.renderer.render(
             self.plan, pcm_format, fade_in_bytes_len

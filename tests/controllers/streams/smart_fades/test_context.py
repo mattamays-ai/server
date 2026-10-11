@@ -8,7 +8,7 @@ import logging
 import numpy as np
 import pytest
 
-from music_assistant.controllers.streams.smart_fades.models import TransitionTier
+from music_assistant.controllers.streams.smart_fades.models import BlendPrefs, TransitionTier
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
 from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
@@ -189,3 +189,50 @@ def test_context_tier_folds_kick_anchor_like_the_old_planner() -> None:
     assert plan.tier is TransitionTier.FULL_BLEND
     assert plan.fade_out_window == pytest.approx(context.audio_end, abs=0.1)
     assert plan.metrics.audible_outgoing_trim <= plan.crossfade_duration
+
+
+def _prefs(tier: TransitionTier | None, stretch: float | None) -> BlendPrefs:
+    return BlendPrefs(preferred_tier=None if tier is None else tier.value, max_stretch_pct=stretch)
+
+
+def test_auto_tier_unchanged_without_prefs() -> None:
+    """No blend prefs: compatible keys still earn the full-blend tier."""
+    context = _context(_analysis(120.0), _analysis(120.0))
+
+    assert context.tier is TransitionTier.FULL_BLEND
+
+
+def test_style_preference_overrides_key_clash() -> None:
+    """A full_blend style forces the long blend even when keys clash (grid allows it)."""
+    out = _analysis(120.0, key="A", mode="minor")
+    inc = _analysis(120.0, key="B", mode="major")
+
+    context = build_transition_context(out, inc, 45.0, LOGGER, blend_prefs=_prefs(TransitionTier.FULL_BLEND, None))
+
+    assert context.tier is TransitionTier.FULL_BLEND
+
+
+def test_stretch_gate_outranks_style_preference() -> None:
+    """A BPM difference beyond the stretch gate still downgrades to quick fade."""
+    out = _analysis(120.0)
+    inc = _analysis(132.0)
+
+    context = build_transition_context(out, inc, 45.0, LOGGER, blend_prefs=_prefs(TransitionTier.FULL_BLEND, None))
+
+    assert context.tier is TransitionTier.QUICK_FADE
+
+    # aggressive strictness widens the gate and the same pair blends
+    widened = build_transition_context(
+        out, inc, 45.0, LOGGER, blend_prefs=_prefs(TransitionTier.FULL_BLEND, 12.0)
+    )
+
+    assert widened.tier is TransitionTier.FULL_BLEND
+
+
+def test_quick_cut_style_forces_the_short_fade() -> None:
+    """A quick_cut style forces quick fade even on a fully blendable pair."""
+    context = build_transition_context(
+        _analysis(120.0), _analysis(120.0), 45.0, LOGGER, blend_prefs=_prefs(TransitionTier.QUICK_FADE, None)
+    )
+
+    assert context.tier is TransitionTier.QUICK_FADE
