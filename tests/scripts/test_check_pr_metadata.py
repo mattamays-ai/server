@@ -6,6 +6,7 @@ import io
 from pathlib import Path
 
 import pytest
+
 from scripts.check_pr_metadata import (
     REQUIRED_CHECKLIST_ITEMS,
     check_description,

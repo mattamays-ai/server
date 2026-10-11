@@ -314,23 +314,6 @@ def _bpm_tolerance(value: Any) -> float:
 class SmartDJProvider(PluginProvider):
     """Native Smart DJ controller and Musicae enrichment client."""
 
-    def _read_full_queue(self, queue_id: str, page: int = 500) -> list[Any]:
-        """
-        Read every queue item via paged reads.
-
-        A single limit-capped read silently truncates long queues, and the
-        wholesale write-back of an apply would then DELETE the unread tail
-        (external audit C-1). Paged reads make the operation total.
-        """
-        out: list[Any] = []
-        offset = 0
-        while True:
-            batch = list(self.mass.player_queues.items(queue_id, limit=page, offset=offset))
-            out.extend(batch)
-            if len(batch) < page:
-                return out
-            offset += page
-
     async def analyze(
         self, queue_id: str, limit: int = 40, analysis_provider: str = "auto"
     ) -> dict[str, Any]:
@@ -425,48 +408,6 @@ class SmartDJProvider(PluginProvider):
             if done:
                 prerolled.append(str(item.queue_item_id))
         return {"queue_id": queue_id, "prerolled": prerolled, "failed": failed}
-
-    async def _preroll_track_analysis(self, queue_item: Any) -> bool:
-        """Silently analyze one queue item. Returns True when analysis was stored."""
-        media = queue_item.media_item
-        media_provider = getattr(media, "provider", None) or getattr(
-            media, "provider_instance", None
-        )
-        media_item_id = getattr(media, "item_id", None)
-        if not media_provider or not media_item_id:
-            return False
-        existing = await self.mass.streams.audio_analysis.get_audio_analysis(
-            item_id=media_item_id,
-            provider_instance_id_or_domain=media_provider,
-        )
-        if existing is not None:
-            return False
-        streamdetails = await self.mass.streams.audio.get_stream_details(queue_item)
-        if streamdetails.is_realtime:
-            return False
-        pcm_format = decoded_pcm_format(streamdetails)
-        buffer = AudioBuffer(pcm_format, BufferSize.BALANCED, BufferMode.SEEKABLE)
-        buffer.fill(
-            self.mass.streams.audio.get_media_stream(streamdetails, pcm_format),
-            source_name="smart_dj_preroll",
-        )
-        try:
-            await self.mass.streams.audio_analysis.start_analysis(buffer, streamdetails)
-            loop = asyncio.get_running_loop()
-            deadline = loop.time() + PREROLL_ANALYSIS_TIMEOUT
-            while loop.time() < deadline and not buffer.cancelled and not buffer.eof:
-                await asyncio.sleep(PREROLL_POLL_SECONDS)
-                stored = await self.mass.streams.audio_analysis.get_audio_analysis(
-                    item_id=media_item_id,
-                    provider_instance_id_or_domain=media_provider,
-                )
-                if stored is not None:
-                    return True
-            return False
-        finally:
-            # tears down the producer and (via the buffer's cancel callback)
-            # evicts any still-active analysis session for this item
-            await buffer.clear()
 
     async def complete_mix(
         self,
@@ -654,142 +595,6 @@ class SmartDJProvider(PluginProvider):
             "quota_exhausted": quota_exhausted,
             "errors": errors[:5],
         }
-
-    def _normalize_musicae(self, entry: dict[str, Any]) -> dict[str, Any]:
-        """Normalize one Musicae analysis entry into the cache shape."""
-        instrumental_raw = entry.get("instrumental")
-        instrumentalness_raw = entry.get("instrumentalness")
-        instrumental_flag = (
-            instrumental_raw
-            if isinstance(instrumental_raw, bool)
-            else (
-                instrumentalness_raw >= 0.5
-                if isinstance(instrumentalness_raw, (int, float))
-                else None
-            )
-        )
-        return {
-            # first-present (NOT `or`): a legitimate 0 must not fall through
-            # to a fallback field; numerics are finite/range validated
-            "bpm": _finite_in(
-                _first_present(entry.get("bpm"), (entry.get("rhythm") or {}).get("bpm")),
-                positive=True,
-            ),
-            "key": _first_present(
-                entry.get("key"),
-                (entry.get("harmony") or {}).get("key"),
-                entry.get("musical_key"),
-            ),
-            "mode": _first_present(entry.get("mode"), (entry.get("harmony") or {}).get("mode")),
-            "camelot": _first_present(
-                entry.get("camelot"), (entry.get("harmony") or {}).get("camelot")
-            ),
-            "energy": _finite_in(
-                _first_present(entry.get("energy"), (entry.get("score") or {}).get("energy")),
-                0.0,
-                1.0,
-            ),
-            "danceability": _finite_in(entry.get("danceability"), 0.0, 1.0),
-            "valence": _finite_in(entry.get("valence"), 0.0, 1.0),
-            "arousal": _finite_in(entry.get("arousal"), 0.0, 1.0),
-            "loudness": _finite_in(
-                _first_present(entry.get("loudness"), entry.get("loudness_integrated"))
-            ),
-            "beats_per_bar": _finite_in(
-                _first_present(
-                    entry.get("beats_per_bar"),
-                    (entry.get("rhythm") or {}).get("time_signature"),
-                ),
-                1.0,
-                12.0,
-            ),
-            "instrumental": instrumental_flag,
-            "instrumentalness": instrumentalness_raw,
-            "source": "musicae",
-            "raw": entry,
-        }
-
-    def _parse_controls(
-        self,
-        raw: dict[str, Any],
-        bpm_tolerance: float,
-        prefer_keys: bool,
-        preserve_variety: bool,
-        mode: str,
-    ) -> DJControls:
-        """Build DJControls from raw API controls plus ranking defaults."""
-
-        def signal(name: str, fallback: str = "soft") -> SignalControl:
-            value = raw.get(name, fallback)
-            if isinstance(value, dict):
-                return SignalControl(
-                    state=str(value.get("state", fallback)),
-                    weight=_signal_weight(value.get("weight", 1.0)),
-                )
-            return SignalControl(state=str(value), weight=1.0)
-
-        transition_bars = _int_control(raw, "transition_bars", 8, allowed={4, 8, 16, 32})
-        overrides_raw = raw.get("transition_bars_overrides") or {}
-        if not isinstance(overrides_raw, dict):
-            raise RuntimeError(  # noqa: TRY004 - control contract, not a type error
-                "transition_bars_overrides must be an object of track id -> bars"
-            )
-        overrides: dict[str, int] = {}
-        for track_id, bars in overrides_raw.items():
-            try:
-                bars_int = int(bars)
-            except TypeError, ValueError:
-                raise RuntimeError(f"Invalid transition bars value for {track_id}: {bars!r}")
-            if bars_int not in {0, 4, 8, 16, 32}:
-                raise RuntimeError(
-                    f"Invalid transition bars value for {track_id}: {bars_int} "
-                    "(must be 0 (hard cut), 4, 8, 16, or 32)"
-                )
-            overrides[str(track_id)] = bars_int
-        key_relation = str(raw.get("key_relation", "compatible"))
-        if key_relation not in {"any", "same", "compatible", "soft"}:
-            raise RuntimeError("key_relation must be one of any, same, compatible, soft")
-        transition_style = str(raw.get("transition_style", "auto"))
-        if transition_style not in {"auto", "full_blend", "energy", "quick_cut"}:
-            raise RuntimeError(
-                "transition_style must be one of auto, full_blend, energy, quick_cut"
-            )
-        beat_strictness = str(raw.get("beat_strictness", "normal"))
-        if beat_strictness not in {"strict", "normal", "aggressive"}:
-            raise RuntimeError("beat_strictness must be one of strict, normal, aggressive")
-        aggr = _float_control(raw, "transition_aggressiveness", 0.5, 0.0, 1.0)
-        return DJControls(
-            bpm=signal("bpm"),
-            key=signal("key", "soft" if prefer_keys else "disabled"),
-            energy=signal("energy"),
-            danceability=signal("danceability"),
-            loudness=signal("loudness"),
-            genre=signal("genre"),
-            artist_spacing=signal("artist_spacing", "soft" if preserve_variety else "disabled"),
-            momentum=signal("momentum"),
-            clap=signal(CLAP_SIGNAL),
-            bpm_min=_float_control(raw, "bpm_min", lo=0.0),
-            bpm_max=_float_control(raw, "bpm_max", lo=0.0),
-            max_bpm_jump=_float_control(raw, "max_bpm_jump", lo=0.0),
-            key_relation=key_relation,
-            max_artist_repeat=_int_control(raw, "max_artist_repeat", 1, lo=0, hi=10),
-            instrumental=str(raw.get("instrumental", "any")),
-            explicit=str(raw.get("explicit", "allow")),
-            transition_bars=transition_bars,
-            transition_bars_overrides=overrides,
-            automix_enabled=bool(raw.get("automix_enabled", False)),
-            smart_reorder_enabled=bool(raw.get("smart_reorder_enabled", True)),
-            transition_style=transition_style,
-            beat_strictness=beat_strictness,
-            # the FE slider spans 1-96 (beam width = lookahead x 3, capped
-            # at 96), so the backend accepts the full range it advertises
-            lookahead=_int_control(raw, "lookahead", 8, lo=1, hi=96),
-            transition_aggressiveness=0.5 if aggr is None else aggr,
-            required_ids=frozenset(str(x) for x in raw.get("required_ids", [])),
-            excluded_ids=frozenset(str(x) for x in raw.get("excluded_ids", [])),
-            fixed_ids=frozenset(str(x) for x in raw.get("fixed_ids", [])),
-            end_track_id=str(raw["end_track_id"]) if raw.get("end_track_id") else None,
-        )
 
     async def mix_playlist(  # noqa: PLR0915 - linear pipeline by design
         self,
@@ -1340,6 +1145,201 @@ class SmartDJProvider(PluginProvider):
             await self._session.close()
             self._session = None
         await super().unload(is_removed)
+
+    def _read_full_queue(self, queue_id: str, page: int = 500) -> list[Any]:
+        """
+        Read every queue item via paged reads.
+
+        A single limit-capped read silently truncates long queues, and the
+        wholesale write-back of an apply would then DELETE the unread tail
+        (external audit C-1). Paged reads make the operation total.
+        """
+        out: list[Any] = []
+        offset = 0
+        while True:
+            batch = list(self.mass.player_queues.items(queue_id, limit=page, offset=offset))
+            out.extend(batch)
+            if len(batch) < page:
+                return out
+            offset += page
+
+    async def _preroll_track_analysis(self, queue_item: Any) -> bool:
+        """Silently analyze one queue item. Returns True when analysis was stored."""
+        media = queue_item.media_item
+        media_provider = getattr(media, "provider", None) or getattr(
+            media, "provider_instance", None
+        )
+        media_item_id = getattr(media, "item_id", None)
+        if not media_provider or not media_item_id:
+            return False
+        existing = await self.mass.streams.audio_analysis.get_audio_analysis(
+            item_id=media_item_id,
+            provider_instance_id_or_domain=media_provider,
+        )
+        if existing is not None:
+            return False
+        streamdetails = await self.mass.streams.audio.get_stream_details(queue_item)
+        if streamdetails.is_realtime:
+            return False
+        pcm_format = decoded_pcm_format(streamdetails)
+        buffer = AudioBuffer(pcm_format, BufferSize.BALANCED, BufferMode.SEEKABLE)
+        buffer.fill(
+            self.mass.streams.audio.get_media_stream(streamdetails, pcm_format),
+            source_name="smart_dj_preroll",
+        )
+        try:
+            await self.mass.streams.audio_analysis.start_analysis(buffer, streamdetails)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + PREROLL_ANALYSIS_TIMEOUT
+            while loop.time() < deadline and not buffer.cancelled and not buffer.eof:
+                await asyncio.sleep(PREROLL_POLL_SECONDS)
+                stored = await self.mass.streams.audio_analysis.get_audio_analysis(
+                    item_id=media_item_id,
+                    provider_instance_id_or_domain=media_provider,
+                )
+                if stored is not None:
+                    return True
+            return False
+        finally:
+            # tears down the producer and (via the buffer's cancel callback)
+            # evicts any still-active analysis session for this item
+            await buffer.clear()
+
+    def _normalize_musicae(self, entry: dict[str, Any]) -> dict[str, Any]:
+        """Normalize one Musicae analysis entry into the cache shape."""
+        instrumental_raw = entry.get("instrumental")
+        instrumentalness_raw = entry.get("instrumentalness")
+        instrumental_flag = (
+            instrumental_raw
+            if isinstance(instrumental_raw, bool)
+            else (
+                instrumentalness_raw >= 0.5
+                if isinstance(instrumentalness_raw, (int, float))
+                else None
+            )
+        )
+        return {
+            # first-present (NOT `or`): a legitimate 0 must not fall through
+            # to a fallback field; numerics are finite/range validated
+            "bpm": _finite_in(
+                _first_present(entry.get("bpm"), (entry.get("rhythm") or {}).get("bpm")),
+                positive=True,
+            ),
+            "key": _first_present(
+                entry.get("key"),
+                (entry.get("harmony") or {}).get("key"),
+                entry.get("musical_key"),
+            ),
+            "mode": _first_present(entry.get("mode"), (entry.get("harmony") or {}).get("mode")),
+            "camelot": _first_present(
+                entry.get("camelot"), (entry.get("harmony") or {}).get("camelot")
+            ),
+            "energy": _finite_in(
+                _first_present(entry.get("energy"), (entry.get("score") or {}).get("energy")),
+                0.0,
+                1.0,
+            ),
+            "danceability": _finite_in(entry.get("danceability"), 0.0, 1.0),
+            "valence": _finite_in(entry.get("valence"), 0.0, 1.0),
+            "arousal": _finite_in(entry.get("arousal"), 0.0, 1.0),
+            "loudness": _finite_in(
+                _first_present(entry.get("loudness"), entry.get("loudness_integrated"))
+            ),
+            "beats_per_bar": _finite_in(
+                _first_present(
+                    entry.get("beats_per_bar"),
+                    (entry.get("rhythm") or {}).get("time_signature"),
+                ),
+                1.0,
+                12.0,
+            ),
+            "instrumental": instrumental_flag,
+            "instrumentalness": instrumentalness_raw,
+            "source": "musicae",
+            "raw": entry,
+        }
+
+    def _parse_controls(
+        self,
+        raw: dict[str, Any],
+        bpm_tolerance: float,
+        prefer_keys: bool,
+        preserve_variety: bool,
+        mode: str,
+    ) -> DJControls:
+        """Build DJControls from raw API controls plus ranking defaults."""
+
+        def signal(name: str, fallback: str = "soft") -> SignalControl:
+            value = raw.get(name, fallback)
+            if isinstance(value, dict):
+                return SignalControl(
+                    state=str(value.get("state", fallback)),
+                    weight=_signal_weight(value.get("weight", 1.0)),
+                )
+            return SignalControl(state=str(value), weight=1.0)
+
+        transition_bars = _int_control(raw, "transition_bars", 8, allowed={4, 8, 16, 32})
+        overrides_raw = raw.get("transition_bars_overrides") or {}
+        if not isinstance(overrides_raw, dict):
+            raise RuntimeError(  # noqa: TRY004 - control contract, not a type error
+                "transition_bars_overrides must be an object of track id -> bars"
+            )
+        overrides: dict[str, int] = {}
+        for track_id, bars in overrides_raw.items():
+            try:
+                bars_int = int(bars)
+            except TypeError, ValueError:
+                raise RuntimeError(f"Invalid transition bars value for {track_id}: {bars!r}")
+            if bars_int not in {0, 4, 8, 16, 32}:
+                raise RuntimeError(
+                    f"Invalid transition bars value for {track_id}: {bars_int} "
+                    "(must be 0 (hard cut), 4, 8, 16, or 32)"
+                )
+            overrides[str(track_id)] = bars_int
+        key_relation = str(raw.get("key_relation", "compatible"))
+        if key_relation not in {"any", "same", "compatible", "soft"}:
+            raise RuntimeError("key_relation must be one of any, same, compatible, soft")
+        transition_style = str(raw.get("transition_style", "auto"))
+        if transition_style not in {"auto", "full_blend", "energy", "quick_cut"}:
+            raise RuntimeError(
+                "transition_style must be one of auto, full_blend, energy, quick_cut"
+            )
+        beat_strictness = str(raw.get("beat_strictness", "normal"))
+        if beat_strictness not in {"strict", "normal", "aggressive"}:
+            raise RuntimeError("beat_strictness must be one of strict, normal, aggressive")
+        aggr = _float_control(raw, "transition_aggressiveness", 0.5, 0.0, 1.0)
+        return DJControls(
+            bpm=signal("bpm"),
+            key=signal("key", "soft" if prefer_keys else "disabled"),
+            energy=signal("energy"),
+            danceability=signal("danceability"),
+            loudness=signal("loudness"),
+            genre=signal("genre"),
+            artist_spacing=signal("artist_spacing", "soft" if preserve_variety else "disabled"),
+            momentum=signal("momentum"),
+            clap=signal(CLAP_SIGNAL),
+            bpm_min=_float_control(raw, "bpm_min", lo=0.0),
+            bpm_max=_float_control(raw, "bpm_max", lo=0.0),
+            max_bpm_jump=_float_control(raw, "max_bpm_jump", lo=0.0),
+            key_relation=key_relation,
+            max_artist_repeat=_int_control(raw, "max_artist_repeat", 1, lo=0, hi=10),
+            instrumental=str(raw.get("instrumental", "any")),
+            explicit=str(raw.get("explicit", "allow")),
+            transition_bars=transition_bars,
+            transition_bars_overrides=overrides,
+            automix_enabled=bool(raw.get("automix_enabled", False)),
+            smart_reorder_enabled=bool(raw.get("smart_reorder_enabled", True)),
+            transition_style=transition_style,
+            beat_strictness=beat_strictness,
+            # the FE slider spans 1-96 (beam width = lookahead x 3, capped
+            # at 96), so the backend accepts the full range it advertises
+            lookahead=_int_control(raw, "lookahead", 8, lo=1, hi=96),
+            transition_aggressiveness=0.5 if aggr is None else aggr,
+            required_ids=frozenset(str(x) for x in raw.get("required_ids", [])),
+            excluded_ids=frozenset(str(x) for x in raw.get("excluded_ids", [])),
+            fixed_ids=frozenset(str(x) for x in raw.get("fixed_ids", [])),
+            end_track_id=str(raw["end_track_id"]) if raw.get("end_track_id") else None,
+        )
 
     def _setup_ui(self) -> None:
         """Serve the UI script and inject its tag into the served index.html."""

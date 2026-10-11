@@ -622,7 +622,6 @@ class StreamsAudio:
         return self._smart_fades_mixer
 
     # --- Public methods ---
-
     async def get_stream_details(
         self,
         queue_item: QueueItem,
@@ -1852,22 +1851,6 @@ class StreamsAudio:
     def get_automix_blend_prefs(self, queue_item_id: str) -> tuple[str, str] | None:
         """Return the pinned (transition_style, beat_strictness) for a queue item."""
         return self._automix_blend_prefs.get(str(queue_item_id))
-
-    def _automix_prefs_for(self, queue_item_id: str) -> BlendPrefs | None:
-        """Translate pinned (style, strictness) strings into planner BlendPrefs."""
-        pinned = self._automix_blend_prefs.get(str(queue_item_id))
-        if pinned is None:
-            return None
-        style, strictness = pinned
-        stretch_pct = BEAT_STRICTNESS_STRETCH_PCT.get(strictness)
-        # user-facing style names are NOT tier names: map them onto the
-        # planner's TransitionTier values (an unknown style or "auto" means
-        # no tier preference). Passing the raw style string through would
-        # raise ValueError inside TransitionTier() at blend-build time.
-        preferred = BLEND_STYLE_TO_TIER.get(style)
-        if preferred is None and stretch_pct is None:
-            return None
-        return BlendPrefs(preferred_tier=preferred, max_stretch_pct=stretch_pct)
 
     async def get_queue_item_stream_with_smartfade(
         self,
@@ -3277,6 +3260,21 @@ class StreamsAudio:
             await writer.wait_closed()
 
     # --- Private methods ---
+    def _automix_prefs_for(self, queue_item_id: str) -> BlendPrefs | None:
+        """Translate pinned (style, strictness) strings into planner BlendPrefs."""
+        pinned = self._automix_blend_prefs.get(str(queue_item_id))
+        if pinned is None:
+            return None
+        style, strictness = pinned
+        stretch_pct = BEAT_STRICTNESS_STRETCH_PCT.get(strictness)
+        # user-facing style names are NOT tier names: map them onto the
+        # planner's TransitionTier values (an unknown style or "auto" means
+        # no tier preference). Passing the raw style string through would
+        # raise ValueError inside TransitionTier() at blend-build time.
+        preferred = BLEND_STYLE_TO_TIER.get(style)
+        if preferred is None and stretch_pct is None:
+            return None
+        return BlendPrefs(preferred_tier=preferred, max_stretch_pct=stretch_pct)
 
     def _notify_provider_streamed(
         self, streamdetails: StreamDetails, finished: bool, seconds_streamed: float

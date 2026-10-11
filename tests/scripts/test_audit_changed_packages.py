@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+
 from scripts.audit_changed_packages import (
     audit_status,
     changed_packages,
