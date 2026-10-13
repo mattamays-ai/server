@@ -1508,7 +1508,7 @@ class SmartDJProvider(PluginProvider):
                 ):
                     if response.status in (401, 403):
                         body = await response.text()
-                        raise SmartDJError(
+                        raise SmartDJError(  # noqa: TRY301 - the raise IS the error channel
                             "musicae_auth",
                             f"Musicae request failed ({response.status}): {body[:300]}",
                         )
@@ -1520,7 +1520,7 @@ class SmartDJProvider(PluginProvider):
                             retry_after = float(ra)
                     elif response.status >= 400:
                         body = await response.text()
-                        raise RuntimeError(
+                        raise RuntimeError(  # noqa: TRY301 - the raise IS the error channel
                             f"Musicae request failed ({response.status}): {body[:300]}"
                         )
                     else:

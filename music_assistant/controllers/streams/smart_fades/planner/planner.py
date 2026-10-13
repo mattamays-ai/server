@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.models import (
-    BlendPrefs,
     DRESSED_STYLES,
+    BlendPrefs,
     QuickFadeTrigger,
     SmartFadeNotApplicable,
     TransitionStyle,

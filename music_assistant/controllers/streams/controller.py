@@ -1353,7 +1353,7 @@ class StreamsController(CoreController):
             if not serving:
                 await self._release_unstarted_audio_source(session, playback_session_id)
 
-    async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
+    async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915,PLR0912 - upstream flow path + our AutoMix pin branch
         """Stream Queue Flow audio to player."""
         self._log_request(request)
         # what a stream request asks of a provider is playback

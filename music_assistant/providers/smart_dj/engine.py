@@ -223,7 +223,7 @@ def _artist_run_length(
     return count
 
 
-def _hard_fail(  # noqa: PLR0915 - every hard rule reads clearest inline
+def _hard_fail(  # noqa: PLR0915,C901,PLR0912 - every hard rule reads clearest inline
     current: dict[str, Any] | None,
     candidate: dict[str, Any],
     controls: DJControls,
