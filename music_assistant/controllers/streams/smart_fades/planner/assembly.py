@@ -593,7 +593,7 @@ class PlanAssembler:
         out_rms = np.asarray(out_a.rms_energy, dtype=np.float32)
         in_rms = np.asarray(in_a.rms_energy, dtype=np.float32)
 
-        def _window_level(rms, duration: float, start: float) -> float:
+        def _window_level(rms: np.ndarray, duration: float, start: float) -> float:
             first = max(0, int(start / (duration / len(rms))))
             last = max(first + 1, int(np.ceil((start + crossfade) / (duration / len(rms)))))
             return float(np.mean(rms[first:last]))

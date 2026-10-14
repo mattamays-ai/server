@@ -945,6 +945,7 @@ class SmartDJProvider(PluginProvider):
             return snapshot
 
         control = self._parse_controls(raw, bpm_tolerance, prefer_keys, preserve_variety, mode)
+        automix_pin: dict[str, Any] | None = None
         if not control.smart_reorder_enabled:
             if apply and control.automix_enabled:
                 # Real AutoMix execution: the queue-level crossfade toggle is a

@@ -614,7 +614,10 @@ class TestPlanSummaryLog:
         assert build_transition_context(out, inc, 45.0, LOGGER).tier is TransitionTier.FULL_BLEND
         # every candidate's re-anchored tail reads as unblendable
         monkeypatch.setattr(
-            candidates, "choose_tier", lambda *_args: (False, TransitionTier.QUICK_FADE)
+            candidates,
+            "choose_tier",
+            # the fork threads the user's preferred tier through, so accept kwargs
+            lambda *_args, **_kwargs: (False, TransitionTier.QUICK_FADE),
         )
 
         line = _summary_line(caplog, out, inc)

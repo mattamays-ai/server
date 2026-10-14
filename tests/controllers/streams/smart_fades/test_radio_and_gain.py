@@ -78,7 +78,7 @@ def _ctx(**overrides: Any) -> TransitionContext:
     def _deck(analysis: AudioAnalysisData) -> Deck:
         return Deck(
             analysis=analysis,
-            bpm=analysis.bpm,
+            bpm=analysis.bpm or 120.0,
             beats=np.asarray(analysis.beats, dtype=np.float32),
             downbeats=np.asarray(analysis.downbeats, dtype=np.float32),
             beats_per_bar=analysis.beats_per_bar or 4,

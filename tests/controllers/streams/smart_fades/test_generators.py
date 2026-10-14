@@ -707,11 +707,12 @@ class TestDefaultGenerators:
         """
         Generators run best-first.
 
-        Order: energy ladder, coda anchor, protective anchor, onset entry,
-        segue, trim closing, filter out, echo out.
+        Order: radio (silent without a pin), energy ladder, coda anchor,
+        protective anchor, onset entry, segue, trim closing, filter out, echo out.
         """
         names = [g.name for g in default_generators()]
         assert names == [
+            "radio",
             "energy-ladder",
             "coda-anchor",
             "protective-anchor",

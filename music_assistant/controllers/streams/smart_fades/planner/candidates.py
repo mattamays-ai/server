@@ -598,7 +598,7 @@ class CandidateFactory:
             return None
         crossfade_duration = self._calculate_crossfade_duration(tail, bars)
 
-        tempo_plan = (
+        tempo_plan: TempoPlan | None = (
             self._choose_tempo_ramp(tier, tail, crossfade_duration) if stretch else TempoPlan()
         )
         crossfade_duration, fadein_trim_start = self._lock_in_timing(

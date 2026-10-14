@@ -375,11 +375,15 @@ class StreamsController(CoreController):
         Requires a large-enough audio buffer (at least balanced) and a loaded
         smart fades audio analysis provider.
         """
-        buffer_size = BufferSize(
-            self.mass.config.get_raw_core_config_value(
-                self.domain, CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
-            )
+        raw_size = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
         )
+        try:
+            buffer_size = BufferSize(raw_size)
+        except ValueError:
+            # fail closed: a malformed preset must never crash the stream path,
+            # it just means smart fades are not available on this server
+            buffer_size = BufferSize.MINIMAL
         return (
             buffer_size != BufferSize.MINIMAL and self.audio_analysis.smart_fades_provider_available
         )
@@ -934,8 +938,8 @@ class StreamsController(CoreController):
                 crossfade_mode = self.get_crossfade_mode(queue)
             if (
                 crossfade_mode not in (CrossfadeMode.SMART_CROSSFADE, CrossfadeMode.DISABLED)
-                and self.smart_fades_available
                 and self.audio.get_automix_crossfade_duration(queue_item.queue_item_id) is not None
+                and self.smart_fades_available
             ):
                 # Smart DJ AutoMix pinned a custom transition for this item:
                 # prefer smart blending over the queue's default mode
