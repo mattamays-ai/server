@@ -598,7 +598,7 @@ class CandidateFactory:
             return None
         crossfade_duration = self._calculate_crossfade_duration(tail, bars)
 
-        tempo_plan: TempoPlan | None = (
+        tempo_plan = (
             self._choose_tempo_ramp(tier, tail, crossfade_duration) if stretch else TempoPlan()
         )
         crossfade_duration, fadein_trim_start = self._lock_in_timing(
@@ -660,8 +660,9 @@ class CandidateFactory:
             TransitionStyle.CUT if tier is TransitionTier.QUICK_FADE else TransitionStyle.BLEND
         )
         if style is TransitionStyle.RADIO:
-            # a radio handover sums nothing: there is no second meter to stretch into
-            tempo_plan = None
+            # a radio handover sums nothing: there is no second meter to stretch
+            # into, so ship the empty (no-ramp) plan rather than a stretch ramp
+            tempo_plan = TempoPlan()
         highpass = None
         if style is TransitionStyle.FILTER_OUT:
             # the sweep rides the volume fade; without a stretch input time is rendered time
