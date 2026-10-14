@@ -451,6 +451,117 @@ class StreamingCrossfadeFilter(Filter):
         return f"StreamingCrossfade(ns={self.crossfade_samples})"
 
 
+class SequentialCrossfadeFilter(Filter):
+    """
+    Radio-style sequential handover: the two decks are never summed.
+
+    The outgoing stream fades to silence over the first half of the window and
+    stops; the incoming stream stays silent until that midpoint, then fades in
+    over the second half. Nothing overlaps, so an unsynced or unbeatmatchable
+    pair still hands over musically - the styles that DO sum their decks
+    (blend, segue, echo out) remain the beatmatched choices.
+    """
+
+    output_fadeout_label: str = "radio_out"
+    output_fadein_label: str = "radio_in"
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        crossfade_samples: int,
+        *,
+        pre_crossfade_samples: int = 0,
+    ) -> None:
+        """
+        Initialize sequential crossfade filter.
+
+        :param crossfade_samples: Total handover window in PCM samples; the
+            fade-out occupies its first half, the fade-in its second.
+        :param pre_crossfade_samples: Samples of the outgoing stream played
+            untouched before the window begins.
+        """
+        self.crossfade_samples = crossfade_samples
+        self.pre_crossfade_samples = pre_crossfade_samples
+        super().__init__(logger)
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Apply the staggered fade-out / fade-in chain and sum the disjoint halves."""
+        ns = self.crossfade_samples
+        pre = self.pre_crossfade_samples
+        half = ns // 2
+        fadeout_chain = (
+            f"afade=t=out:start_sample={pre}:nb_samples={half}:curve=qsin,"
+            f"atrim=end_sample={pre + ns}"
+        )
+        fadein_chain = (
+            f"adelay={pre + half}S:all=1,"
+            f"afade=t=in:start_sample=0:nb_samples={ns - half}:curve=qsin"
+        )
+        # the final output stays unlabeled: this filter ends the chain and an
+        # unconnected named output fails the whole graph
+        return [
+            f"{input_fadeout_label}{fadeout_chain}[radio_out]",
+            f"{input_fadein_label}{fadein_chain}[radio_in]",
+            "[radio_out][radio_in]amix=inputs=2:normalize=0",
+        ]
+
+    def __repr__(self) -> str:
+        """Return string representation of SequentialCrossfadeFilter."""
+        return f"SequentialCrossfade(pre={self.pre_crossfade_samples}, ns={self.crossfade_samples})"
+
+
+class GainMatchFilter(Filter):
+    """
+    Loudness correction on the incoming deck across the overlap.
+
+    The dB step between the decks' program loudness is measured at plan time
+    from their RMS over the planned overlap; this filter applies the correction
+    at the incoming track's first audible sample and ramps back to unity after
+    the overlap ends, so the boundary hands over at matched loudness without
+    any permanent level change.
+    """
+
+    output_fadeout_label: str = "gainmatch_out"
+    output_fadein_label: str = "gainmatch_in"
+
+    def __init__(
+        self,
+        logger: logging.Logger,
+        gain_db: float,
+        overlap_seconds: float,
+        ramp_seconds: float,
+    ) -> None:
+        """
+        Initialize gain match filter.
+
+        :param gain_db: Correction in dB applied to the incoming stream at its
+            first sample; positive boosts a quiet incoming track.
+        :param overlap_seconds: How long the correction holds before ramping back.
+        :param ramp_seconds: How long the ramp back to unity takes.
+        """
+        self.gain_db = gain_db
+        self.overlap_seconds = overlap_seconds
+        self.ramp_seconds = ramp_seconds
+        super().__init__(logger)
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Apply the correction envelope on the incoming stream, passthrough on the outgoing."""
+        # the volume expression is linear amplitude: convert the dB correction once
+        lin = 10.0 ** (self.gain_db / 20.0)
+        hold = self.overlap_seconds
+        ramp = self.ramp_seconds
+        # gain starts at `lin`, holds through the overlap, ramps back to 1.0
+        envelope = f"1+({lin:.5f}-1)*max(0\\,min(1\\,({hold + ramp:.3f}-t)/{ramp:.3f}))"
+        return [
+            f"{input_fadeout_label}anull[{self.output_fadeout_label}]",  # codespell:ignore anull
+            f"{input_fadein_label}volume=eval=frame:volume='{envelope}'[{self.output_fadein_label}]",
+        ]
+
+    def __repr__(self) -> str:
+        """Return string representation of GainMatchFilter."""
+        return f"GainMatch({self.gain_db:+.1f}dB hold={self.overlap_seconds:.2f}s)"
+
+
 class VoiceOverMixFilter(Filter):
     """
     Mix the outgoing voice over the start of the incoming track, ducking the track under it.

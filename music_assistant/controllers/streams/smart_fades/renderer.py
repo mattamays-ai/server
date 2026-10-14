@@ -20,9 +20,11 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     FadeInTrimFilter,
     FadeOutTrimFilter,
     Filter,
+    GainMatchFilter,
     GradualTimeStretchFilter,
     HighPassSweepFilter,
     PeakFilter,
+    SequentialCrossfadeFilter,
     ShelfFilter,
     ShelfType,
     StreamingCrossfadeFilter,
@@ -31,10 +33,15 @@ from music_assistant.controllers.streams.smart_fades.models import (
     CrossfadeTimingInfo,
     ShelfSchedule,
     TransitionPlan,
+    TransitionStyle,
 )
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
+
+
+# how long after the overlap the gain-match correction takes to return to unity
+_GAIN_MATCH_RAMP_S: float = 2.0
 
 
 class TransitionRenderer:
@@ -75,7 +82,9 @@ class TransitionRenderer:
         pre_crossfade_samples = int(
             max(0.0, fade_out_seconds - crossfade_seconds) * pcm_format.sample_rate
         )
-        filters = self._build_filters(plan, crossfade_samples, pre_crossfade_samples)
+        filters = self._build_filters(
+            plan, crossfade_samples, pre_crossfade_samples, crossfade_seconds
+        )
         timing = CrossfadeTimingInfo(
             pre_crossfade_duration=max(0.0, fade_out_seconds - crossfade_seconds),
             crossfade_duration=crossfade_seconds,
@@ -85,7 +94,11 @@ class TransitionRenderer:
         return filters, timing
 
     def _build_filters(
-        self, plan: TransitionPlan, crossfade_samples: int, pre_crossfade_samples: int
+        self,
+        plan: TransitionPlan,
+        crossfade_samples: int,
+        pre_crossfade_samples: int,
+        crossfade_seconds: float,
     ) -> list[Filter]:
         """Assemble the ordered filter chain from the plan."""
         filters: list[Filter] = []
@@ -98,6 +111,17 @@ class TransitionRenderer:
                     trimmed_seconds=plan.fadeout_trim.trimmed_seconds,
                 )
             )
+        if plan.style is TransitionStyle.RADIO:
+            # a radio handover sums nothing: no EQ handover, no stretch, no
+            # dressing - and no gain match either, since no program overlaps
+            filters.append(
+                SequentialCrossfadeFilter(
+                    self.logger,
+                    crossfade_samples,
+                    pre_crossfade_samples=pre_crossfade_samples,
+                )
+            )
+            return filters
         # outgoing shelves and effects before the stretch keep their schedules in
         # musical input time
         self._append_shelf(filters, plan.eq_plan.low_out, "fadeout")
@@ -128,6 +152,15 @@ class TransitionRenderer:
         # emit while the incoming window is still arriving; the hard cut at the
         # planned end keeps any time-stretch drift out of the incoming audio. An echo
         # out sums its taps with the incoming track at full level, so its mix is limited
+        if plan.gain_match_db is not None:
+            filters.append(
+                GainMatchFilter(
+                    self.logger,
+                    plan.gain_match_db,
+                    overlap_seconds=crossfade_seconds,
+                    ramp_seconds=crossfade_seconds + _GAIN_MATCH_RAMP_S,
+                )
+            )
         filters.append(
             StreamingCrossfadeFilter(
                 logger=self.logger,

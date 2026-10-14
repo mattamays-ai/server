@@ -150,6 +150,7 @@ class PlanAssembler:
         # a segue's and an echo out's factory already picked both curves
         if plan.style not in (TransitionStyle.SEGUE, TransitionStyle.ECHO_OUT):
             plan = replace(plan, fadeout_curve=_choose_fadeout_curve(self._ctx, plan))
+        plan = replace(plan, gain_match_db=self._gain_match_db(plan))
         # the winner's metrics ride along: consumers read them off the plan
         return replace(plan, eq_plan=self._choose_eq(plan), metrics=candidate.metrics)
 
@@ -161,6 +162,7 @@ class PlanAssembler:
         # sides equal-power keeps its handover EQ
         if (
             plan.style is TransitionStyle.CUT
+            or plan.style is TransitionStyle.RADIO
             or plan.style in DRESSED_STYLES
             or (
                 plan.style is TransitionStyle.SEGUE
@@ -567,6 +569,47 @@ class PlanAssembler:
             if running_max > 0.0 and power > 0.0:
                 max_drop_db = max(max_drop_db, 10.0 * float(np.log10(running_max / power)))
         return max_drop_db
+
+    def _gain_match_db(self, plan: TransitionPlan) -> float | None:
+        """
+        Measure the loudness step across the boundary, or None when not worth correcting.
+
+        The correction (dB, applied to the INCOMING stream) matches the incoming
+        track's level over the planned overlap to the outgoing's level at the same
+        moment, from the RMS analysis both decks already carry. Clamped so a
+        mastering accident cannot become a fader accident.
+        """
+        import numpy as np  # noqa: PLC0415
+
+        ctx = self._ctx
+        if plan.style is TransitionStyle.RADIO:
+            return None  # nothing is ever summed, so there is no seam to match
+        out_a, in_a = ctx.outgoing.analysis, ctx.incoming.analysis
+        if not (out_a.rms_energy and in_a.rms_energy and out_a.duration and in_a.duration):
+            return None
+        crossfade = plan.crossfade_duration
+        if crossfade <= 0:
+            return None
+        out_rms = np.asarray(out_a.rms_energy, dtype=np.float32)
+        in_rms = np.asarray(in_a.rms_energy, dtype=np.float32)
+
+        def _window_level(rms, duration: float, start: float) -> float:
+            first = max(0, int(start / (duration / len(rms))))
+            last = max(first + 1, int(np.ceil((start + crossfade) / (duration / len(rms)))))
+            return float(np.mean(rms[first:last]))
+
+        # outgoing media time over the overlap; the incoming head starts at 0
+        out_start = ctx.buffer_offset + plan.fade_out_window - crossfade
+        out_level = _window_level(out_rms, out_a.duration, out_start)
+        in_level = _window_level(in_rms, in_a.duration, 0.0)
+        if out_level <= 0.0 or in_level <= 0.0:
+            return None
+        delta_db = 20.0 * math.log10(in_level / out_level)
+        if abs(delta_db) < 1.0:
+            return None  # within a dB: the boundary is already matched
+        # the correction goes to the incoming deck: a louder incoming is pulled
+        # down, a quieter one lifted, never beyond a mastering-sane range
+        return float(np.clip(-delta_db, -3.0, 6.0))
 
 
 class FallbackCrossfadeFactory:

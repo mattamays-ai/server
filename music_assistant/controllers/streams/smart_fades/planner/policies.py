@@ -225,7 +225,10 @@ class OverlapPreferencePolicy(Policy):
         tier_steps = max(0, _TIER_ORDER.index(spec.tier) - _TIER_ORDER.index(ctx.tier))
         penalty = self.rung_penalty_per_step * rung_gap
         penalty += self.tier_penalty_per_step * tier_steps
-        if ctx.preferred_style is TransitionStyle.SEGUE:
+        if ctx.preferred_style is TransitionStyle.SEGUE or (
+            ctx.preferred_style is TransitionStyle.RADIO
+            and (candidate.plan.style is not TransitionStyle.RADIO)
+        ):
             penalty += self.style_penalty
         return Verdict.ok(penalty)
 
@@ -235,6 +238,8 @@ class AnchorAlignmentPolicy(Policy):
 
     downbeat_penalty: float = 4.0
     entry_misalignment_penalty: float = 2.0
+    # an anchor off the 8-bar phrase grid (bar index not a multiple of 8)
+    phrase_misalignment_penalty: float = 1.5
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
@@ -243,12 +248,34 @@ class AnchorAlignmentPolicy(Policy):
         penalty = 0.0
         if not candidate.metrics.anchor_on_downbeat:
             penalty += self.downbeat_penalty
+        else:
+            penalty += self._phrase_penalty(candidate, ctx)
         spec = candidate.spec
         # a generator-pinned entry counts as groove-aligned only when the
         # generator itself already lands it on the vocal onset
         if spec.entry_s is not None and spec.source != VocalOnsetEntryGenerator.name:
             penalty += self.entry_misalignment_penalty
         return Verdict.ok(penalty)
+
+    def _phrase_penalty(self, candidate: Candidate, ctx: TransitionContext) -> float:
+        """Prefer anchors on the 8-bar phrase grid; a heuristic, not structure detection."""
+        import numpy as np  # noqa: PLC0415
+
+        if not ctx.outgoing.downbeats.size:
+            return 0.0
+        bar_seconds = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+        if bar_seconds <= 0:
+            return 0.0
+        # plan times are buffer-local; the outgoing grids are media time
+        media_anchor = ctx.buffer_offset + candidate.plan.outgoing_end
+        bars_from_start = media_anchor / bar_seconds
+        phrase_drift = abs(np.mod(bars_from_start, 8.0))
+        # within a quarter bar of a phrase line counts as aligned
+        return (
+            0.0
+            if min(phrase_drift, 8.0 - phrase_drift) <= 0.25
+            else self.phrase_misalignment_penalty
+        )
 
 
 def default_policies() -> tuple[Policy, ...]:

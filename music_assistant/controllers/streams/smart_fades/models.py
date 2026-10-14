@@ -66,6 +66,10 @@ class TransitionStyle(StrEnum):
     FILTER_OUT = "filter_out"
     # the outgoing track stops on a downbeat and its last beat echoes out
     ECHO_OUT = "echo_out"
+    # sequential radio handover: the outgoing fades out alone over the first
+    # half of the window, the incoming fades in alone over the second half;
+    # nothing from the two decks is ever summed
+    RADIO = "radio"
 
 
 # the short styles that dress a cut with an effect on the outgoing track
@@ -311,6 +315,9 @@ class BlendPrefs:
     # Max BPM-difference percent the planner may time-stretch across.
     # None = engine default (TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD).
     max_stretch_pct: float | None = None
+    # A raw user style pin (e.g. "radio") that bypasses tier choice entirely:
+    # a rendering style, not a tier. None = the tiers decide the style.
+    style_override: str | None = None
 
 
 class TransitionStrategy(StrEnum):
@@ -376,6 +383,9 @@ class TransitionPlan:
     highpass: HighPassSweep | None = None
     echo: EchoOut | None = None
     metrics: PlanMetrics = field(default_factory=PlanMetrics)
+    # dB correction applied to the incoming stream across the overlap, measured
+    # from the decks' RMS at assembly; None = no correction (or nothing to measure)
+    gain_match_db: float | None = None
 
     @property
     def outgoing_end(self) -> float:

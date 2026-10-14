@@ -183,10 +183,15 @@ class TransitionContext:
     in_kickless: bool = False
     # None without RMS energy on both decks
     segue: SegueFacts | None = None
+    # a raw user style pin (the Smart DJ "radio" style): when set, the candidate
+    # generators ship this style directly instead of the tier-chosen default
+    style_override: TransitionStyle | None = None
 
     @property
     def preferred_style(self) -> TransitionStyle:
         """The style this pair should ship: a beatmatchable tier blends, any other pair segues."""
+        if self.style_override is not None:
+            return self.style_override
         if self.tier is TransitionTier.QUICK_FADE:
             return TransitionStyle.SEGUE
         return TransitionStyle.BLEND
@@ -328,6 +333,11 @@ def build_transition_context(
     if preferred_tier is not None and tier is not TransitionTier.QUICK_FADE:
         # user style preference wins on a blendable shared grid
         tier = preferred_tier
+    style_override = (
+        TransitionStyle(blend_prefs.style_override)
+        if blend_prefs is not None and blend_prefs.style_override is not None
+        else None
+    )
     bpm_diff_percent = _bpm_diff_percent(outgoing.bpm, incoming.bpm)
 
     # fade detection is a per-transition fact regardless of which anchor a
@@ -415,6 +425,7 @@ def build_transition_context(
         tier=tier,
         cross_meter=cross_meter,
         preferred_tier=preferred_tier,
+        style_override=style_override,
         bpm_diff_percent=bpm_diff_percent,
         vocal_out_placement=vocal_out_placement,
         vocal_in_placement=vocal_in_placement,

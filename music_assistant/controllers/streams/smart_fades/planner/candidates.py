@@ -502,9 +502,32 @@ class EchoOutGenerator(CandidateGenerator):
             )
 
 
+class RadioGenerator(CandidateGenerator):
+    """Emits the pinned sequential radio handover; silent unless the user pinned that style."""
+
+    name = "radio"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit radio specs at the default anchor; nothing when no style is pinned."""
+        if ctx.style_override is not TransitionStyle.RADIO:
+            return
+        ladder = bars_ladder(ctx, ctx.tier)
+        for bars in ladder:
+            yield CandidateSpec(
+                tier=ctx.tier,
+                bars=bars,
+                anchor_s=None,
+                entry_s=None,
+                source=self.name,
+                ideal_bars=ladder[0],
+                style=TransitionStyle.RADIO,
+            )
+
+
 def default_generators() -> tuple[CandidateGenerator, ...]:
     """Return the standard generator set, in preference order (best first)."""
     return (
+        RadioGenerator(),
         EnergyLadderGenerator(),
         CodaAnchorGenerator(),
         ProtectiveAnchorGenerator(),
@@ -636,6 +659,9 @@ class CandidateFactory:
         style = spec.style or (
             TransitionStyle.CUT if tier is TransitionTier.QUICK_FADE else TransitionStyle.BLEND
         )
+        if style is TransitionStyle.RADIO:
+            # a radio handover sums nothing: there is no second meter to stretch into
+            tempo_plan = None
         highpass = None
         if style is TransitionStyle.FILTER_OUT:
             # the sweep rides the volume fade; without a stretch input time is rendered time

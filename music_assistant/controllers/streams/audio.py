@@ -3542,9 +3542,14 @@ class StreamsAudio:
         # no tier preference). Passing the raw style string through would
         # raise ValueError inside TransitionTier() at blend-build time.
         preferred = BLEND_STYLE_TO_TIER.get(style)
-        if preferred is None and stretch_pct is None:
+        # "radio" is a rendering style, not a tier: it bypasses tier choice
+        # entirely and is carried to the planner as a style override
+        style_override = "radio" if style == "radio" else None
+        if preferred is None and stretch_pct is None and style_override is None:
             return None
-        return BlendPrefs(preferred_tier=preferred, max_stretch_pct=stretch_pct)
+        return BlendPrefs(
+            preferred_tier=preferred, max_stretch_pct=stretch_pct, style_override=style_override
+        )
 
     def _notify_provider_stream_started(self, streamdetails: StreamDetails) -> bool:
         """
