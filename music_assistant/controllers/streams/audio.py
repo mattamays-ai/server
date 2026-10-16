@@ -3544,7 +3544,9 @@ class StreamsAudio:
         preferred = BLEND_STYLE_TO_TIER.get(style)
         # "radio" is a rendering style, not a tier: it bypasses tier choice
         # entirely and is carried to the planner as a style override
-        style_override = "radio" if style == "radio" else None
+        style_override = (
+            style if style in {"radio", "echo_out", "filter_out"} else None
+        )
         if preferred is None and stretch_pct is None and style_override is None:
             return None
         return BlendPrefs(

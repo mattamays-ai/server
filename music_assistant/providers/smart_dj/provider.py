@@ -9,6 +9,7 @@ import os
 import tempfile
 import time
 from contextlib import suppress
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -43,6 +44,7 @@ from .engine import (
     SignalControl,
     _merge_track,
     beam_optimize,
+    camelot_affinity,
 )
 
 if TYPE_CHECKING:
@@ -163,6 +165,59 @@ def _genre_profile(genre: str | None) -> tuple[str, str] | None:
         if keyword in lowered:
             return profile
     return None
+
+
+def _transition_report(
+    ordered: list[dict[str, Any]],
+    control: DJControls,
+) -> list[dict[str, Any]]:
+    """
+    One self-explanation note per planned boundary, in playback order.
+
+    Plan-time facts only: the renderer still picks the final rendered style
+    per pair at blend time (its selection sees beat grids and vocal windows
+    the plan does not). These are the inputs that decision reads: tempo
+    delta, key affinity, vocal-collision risk, and which style/strictness
+    the boundary is pinned to -- plus where that pin came from.
+    """
+    notes: list[dict[str, Any]] = []
+    for current, candidate in pairwise(ordered):
+        # callers feed either nested rows ({"analysis": {...}} from queue/
+        # playlist snapshots) or flat dicts; analysis keys lose to the
+        # top level so overrides stay authoritative
+        cur = {**(current.get("analysis") or {}), **current}
+        cand = {**(candidate.get("analysis") or {}), **candidate}
+        a, b = cur.get("bpm"), cand.get("bpm")
+        bpm_delta_pct = (
+            round(abs(float(b) - float(a)) / float(a) * 100, 2)
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)) and float(a)
+            else None
+        )
+        camelot_a, camelot_b = cur.get("camelot"), cand.get("camelot")
+        key_distance = camelot_affinity(camelot_a, camelot_b) if camelot_a and camelot_b else None
+        style = control.transition_style
+        strictness = control.beat_strictness
+        source = "user" if style != "auto" else None
+        if source is None:
+            profile = _genre_profile(cand.get("genre"))
+            if profile is not None:
+                style, strictness, source = profile[0], profile[1], "genre"
+            else:
+                # style stays "auto": the planner decides per pair at blend time
+                source = "engine"
+        notes.append(
+            {
+                "to": cand.get("name"),
+                "bpm_delta_pct": bpm_delta_pct,
+                "key_distance": key_distance,
+                "both_vocal": cur.get("instrumental") is not True
+                and cand.get("instrumental") is not True,
+                "style": style,
+                "strictness": strictness,
+                "source": source,
+            }
+        )
+    return notes
 
 
 def _automix_blend_prefs(
@@ -413,6 +468,60 @@ async def _fetch_radio_tracks(
     return raw_tracks
 
 
+async def _playlist_analysis_rows(
+    provider: Any,
+    resolved: list[Any],
+    analysis_provider: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """
+    Analyze resolved playlist tracks; shared by mix_playlist + save_sorted.
+
+    Returns (analyzed rows with mix- ids and nested analysis, media_by_id
+    mapping mix- id -> the resolved media item). Analysis failures are kept
+    as rows with analysis=None; the optimizer scores them last.
+    """
+    analysis_rows: list[dict[str, Any]] = []
+    media_by_id: dict[str, Any] = {}
+    for idx, track in enumerate(resolved):
+        metadata = getattr(track, "metadata", None)
+        genres = list(getattr(metadata, "genres", None) or [])
+        mix_id = f"mix-{idx}"
+        analysis_rows.append(
+            {
+                "queue_item_id": mix_id,
+                "name": track.name,
+                "artist": getattr(track, "artist_str", None) or getattr(track, "artist", None),
+                "item_id": track.item_id,
+                "provider": getattr(track, "provider", None)
+                or getattr(track, "provider_instance", None),
+                "genre": genres[0] if genres else None,
+                "genres": genres,
+                "explicit": getattr(metadata, "explicit", None) if metadata else None,
+            }
+        )
+        media_by_id[mix_id] = track
+
+    tasks = [
+        asyncio.create_task(
+            provider._analysis(
+                item["item_id"],
+                item["provider"],
+                {k: item[k] for k in ("genre", "genres", "explicit") if k in item},
+                analysis_provider,
+            )
+        )
+        for item in analysis_rows
+    ]
+    analyses = await asyncio.gather(*tasks, return_exceptions=True)
+    analyzed: list[dict[str, Any]] = []
+    for item, result in zip(analysis_rows, analyses, strict=True):
+        analysis = None if isinstance(result, Exception) else result
+        if isinstance(result, Exception):
+            provider.logger.debug("Smart DJ analysis failed for %s: %s", item["item_id"], result)
+        analyzed.append({**item, "analysis": analysis})
+    return analyzed, media_by_id
+
+
 class SmartDJProvider(PluginProvider):
     """Native Smart DJ controller and Musicae enrichment client."""
 
@@ -537,6 +646,9 @@ class SmartDJProvider(PluginProvider):
         if not spotify_instances:
             raise RuntimeError("Complete mix requires a Spotify provider instance")
         spotify_instance = spotify_instances[0].instance_id
+        # the controls param was previously dead (audit note); it now feeds
+        # the transition report so the notes reflect the caller's pins
+        control = self._parse_controls(dict(controls or {}), 0.08, True, True, "ai_dj")
 
         # Musicae radio: primary path per the 2026 docs, seeded by one track id.
         # The endpoint shape is path-parameterized (/v2/tracks/{id}/radio); if
@@ -586,6 +698,7 @@ class SmartDJProvider(PluginProvider):
             "seed": seed.get("name"),
             "added": [track.name for track in tracks],
             "automix_pinned": automix_pinned,
+            "transition_notes": _transition_report([seed, *tracks], control),
         }
 
     async def analyze_library(
@@ -734,45 +847,7 @@ class SmartDJProvider(PluginProvider):
         if len(resolved) < 2:
             raise RuntimeError("Playlist tracks could not be resolved for mixing")
 
-        analysis_rows: list[dict[str, Any]] = []
-        media_by_id: dict[str, Any] = {}
-        for idx, track in enumerate(resolved):
-            metadata = getattr(track, "metadata", None)
-            genres = list(getattr(metadata, "genres", None) or [])
-            mix_id = f"mix-{idx}"
-            analysis_rows.append(
-                {
-                    "queue_item_id": mix_id,
-                    "name": track.name,
-                    "artist": getattr(track, "artist_str", None) or getattr(track, "artist", None),
-                    "item_id": track.item_id,
-                    "provider": getattr(track, "provider", None)
-                    or getattr(track, "provider_instance", None),
-                    "genre": genres[0] if genres else None,
-                    "genres": genres,
-                    "explicit": getattr(metadata, "explicit", None) if metadata else None,
-                }
-            )
-            media_by_id[mix_id] = track
-
-        tasks = [
-            asyncio.create_task(
-                self._analysis(
-                    item["item_id"],
-                    item["provider"],
-                    {k: item[k] for k in ("genre", "genres", "explicit") if k in item},
-                    analysis_provider,
-                )
-            )
-            for item in analysis_rows
-        ]
-        analyses = await asyncio.gather(*tasks, return_exceptions=True)
-        analyzed: list[dict[str, Any]] = []
-        for item, result in zip(analysis_rows, analyses, strict=True):
-            analysis = None if isinstance(result, Exception) else result
-            if isinstance(result, Exception):
-                self.logger.debug("Smart DJ analysis failed for %s: %s", item["item_id"], result)
-            analyzed.append({**item, "analysis": analysis})
+        analyzed, media_by_id = await _playlist_analysis_rows(self, resolved, analysis_provider)
 
         preset = MODES.get(mode, MODES["ai_dj"])
         selected_mode = DJMode(
@@ -1107,6 +1182,7 @@ class SmartDJProvider(PluginProvider):
             "queue_id": queue_id,
             "current_item_id": tracks[0]["queue_item_id"],
             "tracks": optimized,
+            "transition_notes": _transition_report([tracks[0], *optimized], control),
             "optimized_window": len(tracks),
             "queue_item_count": snapshot.get("queue_item_count"),
             # "applied" means THE QUEUE WAS MUTATED and nothing else
@@ -1152,7 +1228,15 @@ class SmartDJProvider(PluginProvider):
                 # beam width = lookahead x 3, capped at 96: the top slider stop
                 # already buys a 96-wide search (the FE label says so now)
                 "lookahead_beam_cap": 96,
-                "transition_styles": ["auto", "full_blend", "energy", "quick_cut", "radio"],
+                "transition_styles": [
+                    "auto",
+                    "full_blend",
+                    "energy",
+                    "quick_cut",
+                    "radio",
+                    "echo_out",
+                    "filter_out",
+                ],
                 "beat_strictness": ["strict", "normal", "aggressive"],
                 "complete_mix": True,
                 "preroll_analysis": True,
@@ -1227,6 +1311,7 @@ class SmartDJProvider(PluginProvider):
             ("smart_dj/analyze", self.analyze, Scope.LIBRARY_WRITE),
             ("smart_dj/rank_queue", self.rank_queue, Scope.LIBRARY_WRITE),
             ("smart_dj/mix_playlist", self.mix_playlist, Scope.LIBRARY_WRITE),
+            ("smart_dj/save_sorted_playlist", self.save_sorted_playlist, Scope.LIBRARY_WRITE),
             ("smart_dj/status", self.status, None),
             ("smart_dj/capabilities", self.capabilities, None),
             (
@@ -1482,6 +1567,88 @@ class SmartDJProvider(PluginProvider):
             "scanned": scanned,
         }
 
+    async def save_sorted_playlist(
+        self,
+        playlist_provider: str,
+        playlist_item_id: str,
+        bpm_tolerance: float = 0.08,
+        prefer_keys: bool = True,
+        preserve_variety: bool = True,
+        mode: str = "ai_dj",
+        controls: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Sort a playlist into Smart DJ order and SAVE the order back.
+
+        The playlist's own track list becomes the sort's persistence: the
+        optimized order is written back through the provider, so every
+        client sees it. Read-only playlists fail loud (the controller's
+        editability + provider-feature checks run inside the handlers).
+        The response carries the new order, per-track energy levels, and
+        per-boundary transition notes.
+        """
+        raw = dict(controls or {})
+        analysis_provider = str(raw.get("analysis_provider", "auto"))
+        control = self._parse_controls(raw, bpm_tolerance, prefer_keys, preserve_variety, mode)
+        playlist_tracks = [
+            item
+            async for item in self.mass.music.playlists.tracks(playlist_item_id, playlist_provider)
+        ]
+        if len(playlist_tracks) < 2:
+            raise RuntimeError("Playlist needs at least 2 tracks to sort")
+        resolved: list[Any] = []
+        for track in playlist_tracks:
+            if getattr(track, "metadata", None) is None and getattr(track, "item_id", None):
+                with suppress(Exception):
+                    track = await self.mass.music.tracks.get(  # noqa: PLW2901
+                        track.item_id, track.provider
+                    )
+            if getattr(track, "item_id", None) and (
+                getattr(track, "provider", None) or getattr(track, "provider_instance", None)
+            ):
+                resolved.append(track)
+        if len(resolved) < 2:
+            raise RuntimeError("Playlist tracks could not be resolved for sorting")
+        analyzed, media_by_id = await _playlist_analysis_rows(self, resolved, analysis_provider)
+        preset = MODES.get(mode, MODES["ai_dj"])
+        selected_mode = DJMode(
+            preset.name,
+            _bpm_tolerance(bpm_tolerance),
+            preset.energy_direction,
+            preset.variety,
+            preset.weights,
+        )
+        optimized = beam_optimize(
+            analyzed[1:],
+            _merge_track(analyzed[0]),
+            selected_mode,
+            controls=control,
+            beam_width=max(4, min(96, control.lookahead * 3)),
+        )
+        ordered = [analyzed[0], *optimized]
+        ordered_media = [media_by_id[entry["queue_item_id"]] for entry in ordered]
+        playlists = self.mass.music.playlists
+        await playlists._handle_remove_playlist_tracks(
+            playlist_item_id, tuple(range(len(ordered_media))), None
+        )
+        await playlists._handle_add_playlist_tracks(
+            playlist_item_id, [media.uri for media in ordered_media], None
+        )
+        levels = [
+            {"name": entry.get("name"), "energy": (entry.get("analysis") or {}).get("energy")}
+            for entry in ordered
+        ]
+        return {
+            "playlist_id": playlist_item_id,
+            "saved": True,
+            "track_count": len(ordered_media),
+            "order": [entry.get("name") for entry in ordered],
+            "levels": levels,
+            "transition_notes": _transition_report(
+                [dict(entry, **(entry.get("analysis") or {})) for entry in ordered], control
+            ),
+        }
+
     def _read_full_queue(self, queue_id: str, page: int = 500) -> list[Any]:
         """
         Read every queue item via paged reads.
@@ -1644,9 +1811,17 @@ class SmartDJProvider(PluginProvider):
         if key_relation not in {"any", "same", "compatible", "soft"}:
             raise RuntimeError("key_relation must be one of any, same, compatible, soft")
         transition_style = str(raw.get("transition_style", "auto"))
-        if transition_style not in {"auto", "full_blend", "energy", "quick_cut", "radio"}:
+        if transition_style not in {
+            "auto",
+            "full_blend",
+            "energy",
+            "quick_cut",
+            "radio",
+            "echo_out",
+            "filter_out",
+        }:
             raise RuntimeError(
-                "transition_style must be one of auto, full_blend, energy, quick_cut, radio"
+                "transition_style must be one of auto, full_blend, energy, quick_cut, radio, echo_out, filter_out"
             )
         beat_strictness = str(raw.get("beat_strictness", "normal"))
         if beat_strictness not in {"strict", "normal", "aggressive"}:
