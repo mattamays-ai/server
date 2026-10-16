@@ -378,6 +378,41 @@ def _bpm_tolerance(value: Any) -> float:
     return max(0.01, min(1.0, tol))
 
 
+async def _fetch_radio_tracks(
+    request: Any,
+    seed: dict[str, Any],
+    count: int,
+) -> list[Any]:
+    """
+    Fetch Musicae radio seeds (primary path 2026 docs, flat variant once).
+
+    Auth/quota failures surface as MusicaeRateLimited with their identity
+    intact; only shape/transport problems are aggregated into one error.
+    """
+    limit = max(1, min(int(count), 50))
+    errors = []
+    data = None
+    for path, params in (
+        (f"/v2/tracks/{seed['item_id']}/radio", {"limit": limit}),
+        ("/v2/radio", {"seed_id": seed["item_id"], "limit": limit}),
+    ):
+        try:
+            data = await request(path, params)
+            break
+        except MusicaeRateLimited:
+            raise  # auth/quota failures keep their identity; do not flatten
+        except RuntimeError as err:
+            errors.append(f"{path}: {err}")
+    if not data:
+        raise RuntimeError("Musicae radio failed - " + " | ".join(errors))
+    raw_tracks = data.get("tracks") if isinstance(data, dict) else None
+    if not isinstance(raw_tracks, list):
+        raise RuntimeError(  # noqa: TRY004 - vendor shape, not a type error
+            f"Unexpected Musicae radio response shape: {str(raw_tracks)[:300]}"
+        )
+    return raw_tracks
+
+
 class SmartDJProvider(PluginProvider):
     """Native Smart DJ controller and Musicae enrichment client."""
 
@@ -507,25 +542,7 @@ class SmartDJProvider(PluginProvider):
         # The endpoint shape is path-parameterized (/v2/tracks/{id}/radio); if
         # that 404s, try the flat variant once. A wrong path raises with both
         # response bodies so the shape is visible in the error.
-        limit = max(1, min(int(count), 50))
-        errors = []
-        data = None
-        for path, params in (
-            (f"/v2/tracks/{seed['item_id']}/radio", {"limit": limit}),
-            ("/v2/radio", {"seed_id": seed["item_id"], "limit": limit}),
-        ):
-            try:
-                data = await self._request(path, params)
-                break
-            except RuntimeError as err:
-                errors.append(f"{path}: {err}")
-        if not data:
-            raise RuntimeError("Musicae radio failed - " + " | ".join(errors))
-        raw_tracks = data.get("tracks") if isinstance(data, dict) else None
-        if not isinstance(raw_tracks, list):
-            raise RuntimeError(  # noqa: TRY004 - vendor shape, not a type error
-                f"Unexpected Musicae radio response shape: {str(data)[:300]}"
-            )
+        raw_tracks = await _fetch_radio_tracks(self._request, seed, count)
 
         tracks: list[Any] = []
         seen: set[str] = set()
@@ -540,7 +557,7 @@ class SmartDJProvider(PluginProvider):
                 self.logger.debug("Musicae radio track %s not resolvable: %s", track_id, err)
                 continue
             tracks.append(track)
-            if len(tracks) >= limit:
+            if len(tracks) >= max(1, min(int(count), 50)):
                 break
         if not tracks:
             raise RuntimeError("Musicae radio returned no tracks resolvable via Spotify")
@@ -635,8 +652,12 @@ class SmartDJProvider(PluginProvider):
                     "/v2/audio-analysis/" + ",".join(musicae_id for _, musicae_id in chunk),
                     {},
                 )
+            except MusicaeRateLimited:
+                quota_exhausted = True
+                break
             except RuntimeError as err:
                 if "429" in str(err):
+                    # fallback for raw vendor 429s that never became typed
                     quota_exhausted = True
                     break
                 errors.append(str(err)[:200])
@@ -950,7 +971,22 @@ class SmartDJProvider(PluginProvider):
         snapshot = await self.analyze(queue_id, analysis_provider=analysis_provider)
         tracks = snapshot["tracks"]
         if len(tracks) < 2:
-            return snapshot
+            # Keep the rank contract shape even when there is nothing to rank:
+            # the FE reads applied/queue_changed/automix on every response and
+            # the raw analyze payload carries none of them.
+            return {
+                "queue_id": queue_id,
+                "current_item_id": tracks[0]["queue_item_id"] if tracks else None,
+                "tracks": [],
+                "optimized_window": len(tracks),
+                "queue_item_count": snapshot.get("queue_item_count"),
+                "applied": False,
+                "queue_changed": False,
+                "automix_applied": False,
+                "automix": None,
+                "reason": "not_enough_tracks",
+                "settings": {"controls": raw, "mode": mode},
+            }
 
         control = self._parse_controls(raw, bpm_tolerance, prefer_keys, preserve_variety, mode)
         automix_pin: dict[str, Any] | None = None
@@ -1572,11 +1608,19 @@ class SmartDJProvider(PluginProvider):
         def signal(name: str, fallback: str = "soft") -> SignalControl:
             value = raw.get(name, fallback)
             if isinstance(value, dict):
-                return SignalControl(
-                    state=str(value.get("state", fallback)),
-                    weight=_signal_weight(value.get("weight", 1.0)),
+                state = str(value.get("state", fallback))
+                weight = _signal_weight(value.get("weight", 1.0))
+            else:
+                state = str(value)
+                weight = 1.0
+            if state not in {"hard", "soft", "disabled"}:
+                # A typo like "hurd" must fail loudly, not silently disable the
+                # signal the user asked for.
+                raise SmartDJError(
+                    "invalid_control",
+                    f"{name}.state={state!r} must be hard, soft, or disabled",
                 )
-            return SignalControl(state=str(value), weight=1.0)
+            return SignalControl(state=state, weight=weight)
 
         transition_bars = _int_control(raw, "transition_bars", 8, allowed={4, 8, 16, 32})
         overrides_raw = raw.get("transition_bars_overrides") or {}
@@ -1602,7 +1646,7 @@ class SmartDJProvider(PluginProvider):
         transition_style = str(raw.get("transition_style", "auto"))
         if transition_style not in {"auto", "full_blend", "energy", "quick_cut", "radio"}:
             raise RuntimeError(
-                "transition_style must be one of auto, full_blend, energy, quick_cut"
+                "transition_style must be one of auto, full_blend, energy, quick_cut, radio"
             )
         beat_strictness = str(raw.get("beat_strictness", "normal"))
         if beat_strictness not in {"strict", "normal", "aggressive"}:

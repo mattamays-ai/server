@@ -231,6 +231,12 @@ def _artist_run_length(
     return count
 
 
+# Stretch-gate ceiling per beat_strictness setting: the maximum BPM-difference
+# fraction the hard BPM gate will accept. strict=6%, normal=8% (default),
+# aggressive=12%, matching the documented DJControls.beat_strictness contract.
+BEAT_STRETCH_LIMITS = {"strict": 0.06, "normal": 0.08, "aggressive": 0.12}
+
+
 def _hard_fail(  # noqa: PLR0915,C901,PLR0912 - every hard rule reads clearest inline
     current: dict[str, Any] | None,
     candidate: dict[str, Any],
@@ -287,8 +293,19 @@ def _hard_fail(  # noqa: PLR0915,C901,PLR0912 - every hard rule reads clearest i
         a = current.get("bpm")
         if not isinstance(a, (int, float)) or not isinstance(bpm, (int, float)):
             violations.append("hard BPM compatibility unavailable")
-        elif abs(float(bpm) - float(a)) > float(a) * 0.08:
-            violations.append("hard BPM compatibility")
+        else:
+            # Stretch gate scaled by beat_strictness (strict=6%, normal=8%,
+            # aggressive=12% - the documented DJControls contract) and tightened
+            # to half the window when either side carries vocals: vocal
+            # material audibly tears around +-3% pitch shift.
+            either_vocal = candidate.get("instrumental") is not True or (
+                current.get("instrumental") is not True
+            )
+            limit = BEAT_STRETCH_LIMITS.get(controls.beat_strictness, 0.08)
+            if either_vocal:
+                limit *= 0.5
+            if abs(float(bpm) - float(a)) > float(a) * limit:
+                violations.append("hard BPM compatibility")
 
     if controls.key.state == "hard" and current:
         a, b = current.get("camelot"), candidate.get("camelot")
@@ -326,9 +343,11 @@ def _hard_fail(  # noqa: PLR0915,C901,PLR0912 - every hard rule reads clearest i
     ):
         violations.append("hard artist spacing")
 
-    if artist_run_length >= max(1, controls.max_artist_repeat):
-        violations.append("maximum consecutive artist repeat exceeded")
-
+    # "soft" spacing is a graded score penalty in _signal_values (the
+    # artist_spacing value decays to zero as the run length reaches the cap);
+    # "disabled" must neither veto nor penalize. The old unconditional veto
+    # made max_artist_repeat=1 (the default) reject EVERY same-artist
+    # follow-up regardless of the user's soft/disabled setting.
     return violations
 
 
