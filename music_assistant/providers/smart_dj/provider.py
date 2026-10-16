@@ -72,6 +72,14 @@ AUTOMIX_MAX_CROSSFADE = 60.0
 PREROLL_ANALYSIS_TIMEOUT = 600
 PREROLL_POLL_SECONDS = 5
 
+# Library-wide local analysis sweep safeguards. The sweep must never make
+# the box feel bad: it defers to active playback, runs at most a handful of
+# tracks at a time, and aborts rather than hammering a broken provider.
+LIBRARY_SCAN_MAX_TRACKS = 10000
+LIBRARY_SCAN_POLL_SECONDS = 10.0
+LIBRARY_SCAN_MAX_FAILURES = 50
+LIBRARY_SCAN_MAX_ERRORS_SHOWN = 5
+
 
 def _automix_durations(tracks: list[dict[str, Any]], control: DJControls) -> dict[str, float]:
     """
@@ -1164,6 +1172,10 @@ class SmartDJProvider(PluginProvider):
         self._tmp_index_path: str | None = None
         self._orig_index_path: str | None = None
         self._unregister_ui_route: Any = None
+        # Library-wide local analysis sweep state (smart_dj/analyze_library_local).
+        self._library_scan_task: asyncio.Task[None] | None = None
+        self._library_scan_cancel = asyncio.Event()
+        self._library_scan_state: dict[str, Any] = {}
 
     async def loaded_in_mass(self) -> None:
         """Register the Smart DJ API commands and load the persistent cache."""
@@ -1189,6 +1201,12 @@ class SmartDJProvider(PluginProvider):
             ("smart_dj/complete_mix", self.complete_mix, Scope.LIBRARY_WRITE),
             ("smart_dj/analyze_library", self.analyze_library, Scope.LIBRARY_WRITE),
             ("smart_dj/analyze_playlist", self.analyze_playlist, Scope.LIBRARY_WRITE),
+            ("smart_dj/analyze_library_local", self.analyze_library_local, Scope.LIBRARY_WRITE),
+            (
+                "smart_dj/create_analyzed_playlist",
+                self.create_analyzed_playlist,
+                Scope.LIBRARY_WRITE,
+            ),
         )
         for command, handler, required_scope in handlers:
             self._handles.append(
@@ -1198,6 +1216,13 @@ class SmartDJProvider(PluginProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Close the HTTP client, drop the UI, and unregister commands."""
+        scan_task = self._library_scan_task
+        if scan_task is not None and not scan_task.done():
+            self._library_scan_cancel.set()
+            scan_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await scan_task
+        self._library_scan_task = None
         self._teardown_ui()
         for handle in self._handles:
             handle()
@@ -1240,18 +1265,7 @@ class SmartDJProvider(PluginProvider):
                     )
             if getattr(track, "item_id", None) and getattr(track, "provider", None):
                 resolved.append(track)
-        try:
-            raw_concurrency = int(
-                self.mass.config.get_raw_core_config_value(
-                    "streams",
-                    CONF_BACKGROUND_SCAN_CONCURRENCY,
-                    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
-                )
-                or DEFAULT_BACKGROUND_SCAN_CONCURRENCY
-            )
-        except ValueError, TypeError:
-            raw_concurrency = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
-        concurrency = max(1, min(raw_concurrency, 8))
+        concurrency = self._background_concurrency()
 
         sem = asyncio.Semaphore(concurrency)
         analyzed: list[str] = []
@@ -1278,6 +1292,158 @@ class SmartDJProvider(PluginProvider):
             "skipped": skipped,
             "failed": failed,
             "concurrency": concurrency,
+        }
+
+    async def analyze_library_local(
+        self,
+        command: str = "start",
+        pause_while_playing: bool = True,
+        limit: int = 0,
+    ) -> dict[str, Any]:
+        """
+        Start, poll, or cancel the library-wide LOCAL analysis sweep.
+
+        Streams every unanalyzed library track silently through the local ML
+        analysis providers (no playback, no audible output, audio never
+        stored, no Musicae quota) so the Smart DJ optimizer and the smart-fades
+        planner have beat grids and RMS for the whole library.
+
+        Safeguards:
+        - ``command="start"`` is idempotent: a second start while a sweep is
+          running just returns the live progress.
+        - ``pause_while_playing=True`` (the default) defers ALL dispatch while
+          any player is PLAYING - the local analyzer is CPU-hungry and must
+          never compete with live audio decode.
+        - concurrency follows the streams background-scan setting (1-8,
+          default 2); each track has a hard timeout and its buffer is always
+          torn down.
+        - a circuit breaker aborts the sweep after
+          ``LIBRARY_SCAN_MAX_FAILURES`` consecutive failures instead of
+          hammering a broken provider.
+        - ``command="cancel"`` stops the sweep between tracks; already-stored
+          analysis is kept, so a re-run resumes effectively for free.
+
+        ``limit`` caps how many library tracks the sweep considers (0 = up to
+        ``LIBRARY_SCAN_MAX_TRACKS``).
+        """
+        if command not in {"start", "status", "cancel"}:
+            raise RuntimeError("command must be one of start, status, cancel")
+        if command == "status":
+            return dict(self._library_scan_state)
+        if command == "cancel":
+            self._library_scan_cancel.set()
+            task = self._library_scan_task
+            if task is not None and not task.done():
+                # cancelling the worker task interrupts any in-flight track
+                # too; _analyze_media_silent's finally always tears the buffer
+                # down, so an interrupted track leaves nothing half-done
+                self._library_scan_state["cancelled"] = True
+                task.cancel()
+            return dict(self._library_scan_state)
+        if self._library_scan_task is not None and not self._library_scan_task.done():
+            return dict(self._library_scan_state)
+        if not self.mass.streams.audio_analysis.providers:
+            raise RuntimeError("No audio analysis providers are loaded")
+        cap = (
+            LIBRARY_SCAN_MAX_TRACKS
+            if int(limit) <= 0
+            else max(1, min(int(limit), LIBRARY_SCAN_MAX_TRACKS))
+        )
+        library_tracks = await self.mass.music.tracks.library_items(
+            favorite=None,
+            search=None,
+            limit=cap,
+            offset=0,
+            order_by="sort_name",
+            summary=False,
+        )
+        targets: list[Any] = [
+            item
+            for item in library_tracks
+            if getattr(item, "item_id", None) and getattr(item, "provider", None)
+        ]
+        self._library_scan_cancel.clear()
+        self._library_scan_state = {
+            "running": True,
+            "total": len(targets),
+            "analyzed": 0,
+            "skipped": 0,
+            "failed": 0,
+            "errors": [],
+            "deferring": False,
+            "cancelled": False,
+            "started_at": time.time(),
+            "finished_at": None,
+        }
+        self._library_scan_task = asyncio.create_task(
+            self._library_scan_worker(targets, self._library_scan_state, pause_while_playing)
+        )
+        return dict(self._library_scan_state)
+
+    async def create_analyzed_playlist(
+        self,
+        name: str = "Smart DJ - analyzed",
+        provider_instance_id: str | None = None,
+        search: str = "",
+        limit: int = 0,
+    ) -> dict[str, Any]:
+        """
+        Create a playlist from every library track that HAS analysis data.
+
+        The result is a ready-to-mix pool: every track in it has the local ML
+        analysis (bpm/key/rms) the Smart DJ optimizer and the smart-fades
+        planner need, so mixing from this playlist always works at full
+        quality. ``search`` narrows the pool to library tracks matching the
+        search string (name/artist/album, same semantics as the MA search).
+        Tracks are scanned in library order (sort_name); ``limit`` caps the
+        scan (0 = up to ``LIBRARY_SCAN_MAX_TRACKS``). The playlist is created
+        on ``provider_instance_id`` when given, else the builtin provider.
+        """
+        cap = (
+            LIBRARY_SCAN_MAX_TRACKS
+            if int(limit) <= 0
+            else max(1, min(int(limit), LIBRARY_SCAN_MAX_TRACKS))
+        )
+        library_tracks = await self.mass.music.tracks.library_items(
+            favorite=None,
+            search=str(search) if search else None,
+            limit=cap,
+            offset=0,
+            order_by="sort_name",
+            summary=False,
+        )
+        uris: list[str] = []
+        scanned = 0
+        for item in library_tracks:
+            item_id = getattr(item, "item_id", None)
+            provider_id = getattr(item, "provider", None)
+            if not item_id or not provider_id:
+                continue
+            scanned += 1
+            existing = await self.mass.streams.audio_analysis.get_audio_analysis(
+                item_id=item_id,
+                provider_instance_id_or_domain=provider_id,
+            )
+            if existing is None:
+                continue
+            uri = getattr(item, "uri", None)
+            if uri:
+                uris.append(uri)
+        if not uris:
+            raise RuntimeError(
+                "No analyzed tracks found - run smart_dj/analyze_library_local first"
+            )
+        playlist = await self.mass.music.playlists.create_playlist(
+            name=name, provider_instance_or_domain=provider_instance_id
+        )
+        # the internal handler runs inline: the action returns once the tracks
+        # are actually in the playlist, not when a background task was queued
+        await self.mass.music.playlists._handle_add_playlist_tracks(playlist.item_id, uris, None)
+        return {
+            "playlist_id": str(playlist.item_id),
+            "name": name,
+            "tracks": len(uris),
+            "scanned": scanned,
         }
 
     def _read_full_queue(self, queue_id: str, page: int = 500) -> list[Any]:
@@ -1840,6 +2006,7 @@ class SmartDJProvider(PluginProvider):
             metadata_obj = getattr(media, "metadata", None)
             genres = getattr(metadata_obj, "genres", None) if metadata_obj else None
             genre_list = list(genres or [])
+            image = metadata_obj.images[0] if metadata_obj and metadata_obj.images else None
             result.append(
                 {
                     "queue_item_id": item.queue_item_id,
@@ -1850,9 +2017,98 @@ class SmartDJProvider(PluginProvider):
                     "genre": genre_list[0] if genre_list else None,
                     "genres": list(genres or []),
                     "explicit": getattr(metadata_obj, "explicit", None) if metadata_obj else None,
+                    # first artwork image, serialized for the frontend's
+                    # getMediaItemImageUrl() (album art behind the row)
+                    "image": (
+                        {
+                            "path": image.path,
+                            "proxy_id": image.proxy_id,
+                            "remotely_accessible": image.remotely_accessible,
+                        }
+                        if image
+                        else None
+                    ),
                 }
             )
         return result
+
+    def _any_player_playing(self) -> bool:
+        """Return True when ANY player on this MA instance is actively playing."""
+        return any(
+            player.state.playback_state == PlaybackState.PLAYING for player in self.mass.players
+        )
+
+    def _background_concurrency(self) -> int:
+        """Read the streams background-scan concurrency setting, clamped to 1-8."""
+        try:
+            raw = int(
+                self.mass.config.get_raw_core_config_value(
+                    "streams",
+                    CONF_BACKGROUND_SCAN_CONCURRENCY,
+                    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+                )
+                or DEFAULT_BACKGROUND_SCAN_CONCURRENCY
+            )
+        except ValueError, TypeError:
+            raw = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
+        return max(1, min(raw, 8))
+
+    async def _library_scan_worker(
+        self, targets: list[Any], state: dict[str, Any], pause_while_playing: bool
+    ) -> None:
+        """
+        Run the sweep behind the safeguards.
+
+        Every dispatch acquires the concurrency semaphore, then defers while
+        playback is active, then analyzes one track. Cancel and the failure
+        circuit breaker are checked between semaphore acquisitions so nothing
+        half-done is ever left behind (``_analyze_media_silent`` always tears
+        its buffer down in a finally).
+        """
+        sem = asyncio.Semaphore(self._background_concurrency())
+        failures = 0
+
+        async def _one(track: Any) -> None:
+            nonlocal failures
+            async with sem:
+                if failures >= LIBRARY_SCAN_MAX_FAILURES:
+                    state["skipped"] += 1
+                    return
+                while pause_while_playing and not self._library_scan_cancel.is_set():
+                    if self._any_player_playing():
+                        state["deferring"] = True
+                        await asyncio.sleep(LIBRARY_SCAN_POLL_SECONDS)
+                    else:
+                        state["deferring"] = False
+                        break
+                if self._library_scan_cancel.is_set():
+                    state["deferring"] = False
+                    state["skipped"] += 1
+                    return
+                try:
+                    done = await self._analyze_media_silent(track.item_id, track.provider)
+                except Exception as err:
+                    failures += 1
+                    state["failed"] += 1
+                    if len(state["errors"]) < LIBRARY_SCAN_MAX_ERRORS_SHOWN:
+                        state["errors"].append(str(err)[:200])
+                    return
+                if done:
+                    failures = 0
+                    state["analyzed"] += 1
+                else:
+                    state["skipped"] += 1
+
+        try:
+            await asyncio.gather(*(_one(track) for track in targets))
+            if failures >= LIBRARY_SCAN_MAX_FAILURES:
+                state["errors"].append(f"sweep aborted after {failures} consecutive failures")
+        finally:
+            state["running"] = False
+            state["deferring"] = False
+            state["finished_at"] = time.time()
+            self._library_scan_task = None
+            await self._save_cache()
 
     async def _analyze_media_silent(self, item_id: str, provider_id: str) -> bool:
         """
