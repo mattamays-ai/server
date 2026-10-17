@@ -19,6 +19,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     VoiceOverMixFilter,
 )
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
+from music_assistant.controllers.streams.smart_fades import stems as stems_ducking
 from music_assistant.controllers.streams.smart_fades.models import (
     BlendPrefs,
     CrossfadeTimingInfo,
@@ -366,6 +367,7 @@ class StandardCrossFade(SmartFade):
         logger: logging.Logger,
         crossfade_duration: float = 10.0,
         trailing_silence_bytes: int = 0,
+        blend_prefs: BlendPrefs | None = None,
     ) -> None:
         """
         Initialize StandardCrossFade.
@@ -374,10 +376,13 @@ class StandardCrossFade(SmartFade):
         :param crossfade_duration: Length of the crossfade overlap in seconds.
         :param trailing_silence_bytes: Trailing silence in the outgoing tail that
             ``apply()`` slices off before crossfading.
+        :param blend_prefs: Optional Smart DJ blend preferences; when ``stems`` is
+            set the outgoing overlap's vocal content is ducked (smart_fades/stems.py).
         """
         super().__init__(logger)
         self.crossfade_duration = crossfade_duration
         self.trailing_silence_bytes = trailing_silence_bytes
+        self.blend_prefs = blend_prefs
         self.crossfade_size: int = 0
 
     def build(
@@ -452,8 +457,25 @@ class StandardCrossFade(SmartFade):
         split = len(fade_out_part) - crossfade_size
         pre_crossfade = fade_out_part[:split]
         adjusted_fade_out_part = fade_out_part[split:]
+        # Stem ducking (optional, BlendPrefs.stems): separate the overlap region
+        # off-thread NOW so the model runs while the pre-crossfade tail is still
+        # playing out, then swap the ducked bytes in right before the blend. When
+        # the stack is unavailable the bytes come back unchanged.
+        duck_task: asyncio.Task[bytes] | None = None
+        if self.blend_prefs is not None and self.blend_prefs.stems:
+            duck_task = asyncio.get_running_loop().create_task(
+                asyncio.to_thread(
+                    stems_ducking.duck_pcm_bytes,
+                    adjusted_fade_out_part,
+                    pcm_format.sample_rate,
+                    pcm_format.bit_depth,
+                    pcm_format.channels,
+                )
+            )
         for pcm_slice in iter_pcm_slices(pre_crossfade, pcm_format, 1000):
             yield pcm_slice
+        if duck_task is not None:
+            adjusted_fade_out_part = await duck_task
 
         if isinstance(fade_in_part, bytes):
             # aclosing so the mixer ffmpeg tears down here, not from a GC finalizer,

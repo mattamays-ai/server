@@ -318,6 +318,10 @@ class BlendPrefs:
     # A raw user style pin (e.g. "radio") that bypasses tier choice entirely:
     # a rendering style, not a tier. None = the tiers decide the style.
     style_override: str | None = None
+    # Vocal ducking on the outgoing overlap via MDX-Net stems (smart_fades/stems.py).
+    # Soft by design: when the runtime or model is missing, the duck silently
+    # does not apply and the transition falls back to the plain blend.
+    stems: bool = False
 
 
 class TransitionStrategy(StrEnum):

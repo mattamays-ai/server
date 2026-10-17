@@ -646,6 +646,7 @@ class StreamsAudio:
         # per-queue-item blend preferences (transition_style, beat_strictness)
         # pinned by the Smart DJ provider alongside the duration pins
         self._automix_blend_prefs: dict[str, tuple[str, str]] = {}
+        self._automix_stems_enabled: bool = False
         self._smart_fades_mixer: SmartFadesMixer | None = None
         # serializes buffer preparation per queue item, so concurrent callers share
         # the single source (and the single capacity reselection) instead of racing
@@ -1970,6 +1971,15 @@ class StreamsAudio:
     def get_automix_blend_prefs(self, queue_item_id: str) -> tuple[str, str] | None:
         """Return the pinned (transition_style, beat_strictness) for a queue item."""
         return self._automix_blend_prefs.get(str(queue_item_id))
+
+    def set_automix_stems(self, enabled: bool) -> None:
+        """
+        Pin the stems vocal-duck toggle (set by the Smart DJ provider).
+
+        Soft: effective only when the separation runtime and model are present;
+        the fade layer degrades to the plain blend otherwise.
+        """
+        self._automix_stems_enabled = bool(enabled)
 
     async def get_queue_item_stream_with_smartfade(  # noqa: C901, PLR0912
         self,
@@ -3547,10 +3557,18 @@ class StreamsAudio:
         style_override = (
             style if style in {"radio", "echo_out", "filter_out"} else None
         )
-        if preferred is None and stretch_pct is None and style_override is None:
+        if (
+            preferred is None
+            and stretch_pct is None
+            and style_override is None
+            and not self._automix_stems_enabled
+        ):
             return None
         return BlendPrefs(
-            preferred_tier=preferred, max_stretch_pct=stretch_pct, style_override=style_override
+            preferred_tier=preferred,
+            max_stretch_pct=stretch_pct,
+            style_override=style_override,
+            stems=self._automix_stems_enabled,
         )
 
     def _notify_provider_stream_started(self, streamdetails: StreamDetails) -> bool:

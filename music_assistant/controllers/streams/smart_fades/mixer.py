@@ -104,6 +104,7 @@ class SmartFadesMixer:
                 pcm_format=pcm_format,
                 standard_crossfade_duration=standard_crossfade_duration,
                 fade_out_analysis=fade_out_analysis,
+                blend_prefs=blend_prefs,
             )
         return smart_fade
 
@@ -164,6 +165,7 @@ class SmartFadesMixer:
         pcm_format: AudioFormat,
         standard_crossfade_duration: int,
         fade_out_analysis: AudioAnalysisData | None = None,
+        blend_prefs: BlendPrefs | None = None,
     ) -> StandardCrossFade:
         """
         Build a StandardCrossFade — the tail of the degradation chain, never fails.
@@ -201,6 +203,7 @@ class SmartFadesMixer:
             logger=self.logger,
             crossfade_duration=standard_crossfade_duration,
             trailing_silence_bytes=trailing_silence_bytes,
+            blend_prefs=blend_prefs,
         )
         smart_fade.build(len(fade_out_data) - trailing_silence_bytes, fade_in_bytes_len, pcm_format)
         self.logger.debug(
