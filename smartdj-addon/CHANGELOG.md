@@ -2,6 +2,22 @@
 
 All notable changes to the Smart DJ Music Assistant add-on.
 
+## 0.0.25
+
+- **Stems vocal duck** — on the fallback crossfade, the outgoing track's vocal
+  bed is attenuated (Kim_Vocal_2 ONNX separation, 67 MB model downloaded on
+  first use) so two vocals never fight in the overlap. Off by default; the
+  toggle rides the automix blend controls and is applied at every pin site,
+  with an explicit clear when automix turns off.
+- **New blend styles** — echo_out and filter_out, backend-validated, ready for
+  a frontend picker.
+- **Transition report card** — the planner now attaches "why this transition"
+  notes (bpm delta, key distance, both-vocal flag, style, strictness, source)
+  to mix results.
+- **save_sorted_playlist** — new action to rebuild a playlist in playing order.
+- Hygiene: B010 lint fix in the 0.0.24 test; onnxruntime pinned (1.31.0) as a
+  repo dependency.
+
 ## 0.0.24
 
 - **Library-wide analysis sweep** — new `smart_dj/analyze_library_local` action
