@@ -77,6 +77,11 @@ class DJControls:
     transition_bars_overrides: dict[str, int] = field(default_factory=dict)
     automix_enabled: bool = False
     smart_reorder_enabled: bool = True
+    # Vocal-duck toggle for the crossfade overlap (smart_fades/stems.py): when
+    # True, pinned transitions duck the outgoing vocal instead of playing the
+    # double-vocal handoff. Soft: degrades to the plain blend when the
+    # separation runtime/model is unavailable.
+    stems_enabled: bool = False
     lookahead: int = 8
     # Blend style preference passed to the smart-fades planner: auto (engine
     # decides), full_blend (force the 16-bar blend when the grid allows),

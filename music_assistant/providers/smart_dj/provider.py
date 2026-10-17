@@ -942,6 +942,7 @@ class SmartDJProvider(PluginProvider):
                         if mix_id in id_map
                     }
                 )
+                self.mass.streams.audio.set_automix_stems(control.stems_enabled)
                 self.mass.create_task(self.preroll_queue_analysis(queue_id, 10))
                 automix_info = {
                     "enabled": True,
@@ -1011,6 +1012,7 @@ class SmartDJProvider(PluginProvider):
                     if mix_id in fresh_ids
                 }
             )
+            self.mass.streams.audio.set_automix_stems(control.stems_enabled)
             # silent background preroll: analyze upcoming tracks so blends
             # improve as the queue plays (no audible output)
             self.mass.create_task(self.preroll_queue_analysis(queue_id, 10))
@@ -1077,6 +1079,7 @@ class SmartDJProvider(PluginProvider):
                 self.mass.streams.audio.set_automix_blend_prefs(
                     _automix_blend_prefs(tracks[1:], control)
                 )
+                self.mass.streams.audio.set_automix_stems(control.stems_enabled)
                 self.mass.create_task(self.preroll_queue_analysis(queue_id, 10))
                 automix_pin = {
                     "enabled": True,
@@ -1162,6 +1165,7 @@ class SmartDJProvider(PluginProvider):
                 # automix off in this plan: release any previously pinned lengths
                 self.mass.streams.audio.set_automix_durations({})
                 self.mass.streams.audio.set_automix_blend_prefs({})
+                self.mass.streams.audio.set_automix_stems(False)
             if control.automix_enabled:
                 # Real AutoMix execution: hand the queue to the streams engine's
                 # crossfade path (smart fades when analysis is available, standard
@@ -1173,6 +1177,7 @@ class SmartDJProvider(PluginProvider):
                 self.mass.streams.audio.set_automix_blend_prefs(
                     _automix_blend_prefs(optimized, control)
                 )
+                self.mass.streams.audio.set_automix_stems(control.stems_enabled)
                 self.mass.create_task(self.preroll_queue_analysis(queue_id, 10))
                 automix_info = {
                     "enabled": True,
@@ -1848,6 +1853,7 @@ class SmartDJProvider(PluginProvider):
             transition_bars_overrides=overrides,
             automix_enabled=bool(raw.get("automix_enabled", False)),
             smart_reorder_enabled=bool(raw.get("smart_reorder_enabled", True)),
+            stems_enabled=bool(raw.get("stems_enabled", False)),
             transition_style=transition_style,
             beat_strictness=beat_strictness,
             # the FE slider spans 1-96 (beam width = lookahead x 3, capped
